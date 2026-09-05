@@ -4,9 +4,11 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"github.com/jeessy2/ddns-go/v6/audit"
 	"html/template"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/jeessy2/ddns-go/v6/config"
@@ -20,6 +22,8 @@ var loginEmbedFile embed.FS
 const cookieName = "token"
 
 // CookieInSystem only one cookie
+var sessionMu sync.RWMutex
+
 var cookieInSystem = &http.Cookie{}
 
 // 服务启动时间
@@ -33,6 +37,7 @@ const loginFailLockDuration = time.Duration(30) * time.Minute
 
 // 登录检测
 type loginDetect struct {
+	mu          sync.Mutex
 	failedTimes uint32       // 失败次数
 	ticker      *time.Ticker // 定时器
 }
@@ -65,6 +70,10 @@ func Login(writer http.ResponseWriter, request *http.Request) {
 
 // LoginFunc login func
 func LoginFunc(w http.ResponseWriter, r *http.Request) {
+	config.EditMu.Lock()
+	defer config.EditMu.Unlock()
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
 	conf, _ := config.GetConfigCached()
 	util.InitLogLang(conf.Lang)
 
@@ -93,7 +102,6 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
 	// 初始化用户名密码
 	if conf.Username == "" && conf.Password == "" {
 		if time.Since(startTime) > saveLimit {
@@ -114,7 +122,11 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		conf.Password = hashedPwd
-		conf.SaveConfig()
+		if err := conf.SaveConfig(); err != nil {
+			returnError(w, "保存账户失败")
+			return
+		}
+		recordChange(r, conf, "account.create", "", conf.Cluster.LocalID, nil, conf.Username)
 	}
 
 	// 登录
@@ -130,6 +142,7 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 覆盖cookie
+		sessionMu.Lock()
 		cookieInSystem = &http.Cookie{
 			Name:     cookieName,
 			Value:    util.GenerateToken(data.Username), // 生成token
@@ -139,13 +152,17 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 		}
 		// 写入cookie
 		http.SetCookie(w, cookieInSystem)
+		token := cookieInSystem.Value
+		sessionMu.Unlock()
+		audit.Record(audit.Event{Actor: conf.Username, Host: util.GetRequestIPStr(r), Operation: "login", Node: conf.Cluster.LocalID, Result: "ok"})
 
 		util.Log("%q 登录成功", util.GetRequestIPStr(r))
 
-		returnOK(w, util.LogStr("登录成功"), cookieInSystem.Value)
+		returnOK(w, util.LogStr("登录成功"), token)
 		return
 	}
 
+	audit.Record(audit.Event{Actor: data.Username, Host: util.GetRequestIPStr(r), Operation: "login", Node: conf.Cluster.LocalID, Result: "failed"})
 	ld.failedTimes = ld.failedTimes + 1
 	util.Log("%q 帐号密码不正确", util.GetRequestIPStr(r))
 	returnError(w, util.LogStr("用户名或密码错误"))
@@ -158,8 +175,10 @@ func loginUnlock() {
 
 	go func(ticker *time.Ticker) {
 		for range ticker.C {
+			ld.mu.Lock()
 			ld.failedTimes = 4
 			ticker.Stop()
+			ld.mu.Unlock()
 		}
 	}(ld.ticker)
 

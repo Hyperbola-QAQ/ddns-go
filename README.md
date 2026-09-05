@@ -2,298 +2,71 @@
 
 [![GitHub release](https://img.shields.io/github/release/jeessy2/ddns-go.svg?logo=github&style=flat-square) ![GitHub release downloads](https://img.shields.io/github/downloads/jeessy2/ddns-go/total?logo=github)](https://github.com/jeessy2/ddns-go/releases/latest) [![Go version](https://img.shields.io/github/go-mod/go-version/jeessy2/ddns-go)](https://github.com/jeessy2/ddns-go/blob/master/go.mod) [![](https://goreportcard.com/badge/github.com/jeessy2/ddns-go/v6)](https://goreportcard.com/report/github.com/jeessy2/ddns-go/v6) [![](https://img.shields.io/docker/image-size/jeessy/ddns-go)](https://registry.hub.docker.com/r/jeessy/ddns-go) [![](https://img.shields.io/docker/pulls/jeessy/ddns-go)](https://registry.hub.docker.com/r/jeessy/ddns-go)
 
-中文 | [English](https://github.com/jeessy2/ddns-go/blob/master/README_EN.md)
+# 分布式集群使用说明
 
-自动获得你的公网 IPv4 或 IPv6 地址，并解析到对应的域名服务。
+## 工作方式
 
-- [DDNS-GO](#ddns-go)
-    - [特性](#特性)
-    - [系统中使用](#系统中使用)
-    - [Docker中使用](#docker中使用)
-    - [使用IPv6](#使用ipv6)
-    - [Webhook](#webhook)
-    - [Callback](#callback)
-    - [界面](#界面)
-    - [开发\&自行编译](#开发自行编译)
+集群功能按配置启用；未启用的旧配置继续使用原有更新流程。每个配置组有一个明确的调度节点，它在更新前探活关联节点，选取 IP 来源及执行节点。执行节点调用自己的 DNS 服务商配置，不接收远程传入的密钥、命令或获取地址设置。
 
-## 特性
+这是一种单调度节点、多个执行节点的轻量实现，不包含共识选举。执行节点掉线时，后续任务可选择其他存活节点；调度节点掉线时暂停该组更新，恢复它或在所有成员上统一修改调度节点 ID。网络分区时不要同时启用两个调度节点。
 
-- 支持Mac、Windows、Linux系统，支持ARM、x86、RISC-V架构
-- 支持的域名服务商 `阿里云` `阿里云 ESA` `腾讯云` `Dnspod` `Cloudflare` `华为云` `Callback` `百度云` `Porkbun` `GoDaddy` `Namecheap` `NameSilo` `Dynadot` `DNSLA` `时代互联` `Eranet` `Tnethk` `Gcore` `EdgeOne` `IBM NS1 Connect` `雨云` `deSEC`
-- 支持接口/网卡/[命令](https://github.com/jeessy2/ddns-go/wiki/通过命令获取IP参考)获取IP
-- 支持以服务的方式运行
-- 默认间隔5分钟同步一次
-- 支持同时配置多个DNS服务商
-- 支持多个域名同时解析
-- 支持多级域名
-- 网页中配置，简单又方便，默认勾选`禁止从公网访问`
-- 网页中方便快速查看最近50条日志
-- 支持Webhook通知
-- 支持TTL
-- 支持部分DNS服务商[传递自定义参数](https://github.com/jeessy2/ddns-go/wiki/传递自定义参数)，实现地域解析/多IP等功能
+## 配置步骤
 
-> [!NOTE]
-> 建议在启用公网访问时，使用 Nginx 等反向代理软件启用 HTTPS 访问，以保证安全性。[FAQ](https://github.com/jeessy2/ddns-go/wiki/FAQ)
+1. 在每台主机部署此版本，启用 Web 服务。`-noweb` 不适合集群节点，因为其他成员需要访问节点接口。
+2. 登录“集群管理”，将本机 ID 设置为全组唯一的稳定值，如 `router-a`。生成并保存本机令牌，将它填写到其他主机上对应节点的访问令牌中。名称可独立编辑，ID 不应随意变更。
+3. 添加组内所有节点，包括本机；填写名称、访问地址、配置组标识。远程 URL 支持 HTTP/HTTPS 和反向代理路径前缀。本机地址可留空，进程自身视为存活。公网通信请使用 HTTPS 或受保护的专用网络。
+4. 在配置管理中启用集群，设置唯一组标识，如 `home`，关联节点 `router-a,server-b`，指定同一个调度节点（如 `router-a`）。每个进程同一组只能对应一个配置；原有多个 DNS 配置仍可并存。
+5. 在所有成员上设置一致的组成员顺序、调度节点、IP 来源、算法、前缀长度、后缀和域名绑定。执行前会校验配置摘要，不一致会拒绝更新。本地网卡、IP 获取 URL/命令、DNS 凭据可以不同；每个可能的执行节点都需要有效 DNS 配置。
+6. 保存后触发一次更新。节点或配置的编辑会进入审计日志；数据库设置在进程重启后生效。
 
-## 系统中使用
+节点的所属组字段可为空（允许被多个配置组关联）；非空时限制只能关联到该组。每项配置可关联多个节点，最多配置 128 个节点。
 
-- 从 [Releases](https://github.com/jeessy2/ddns-go/releases) 下载并解压 ddns-go
-- 安装服务
-  - Mac/Linux: `sudo ./ddns-go -s install`
-  - Win(以管理员打开cmd): `.\ddns-go.exe -s install`
-- 配置
-  - 打开浏览器并访问`http://localhost:9876`进行初始化配置
-- [可选] 服务卸载
-  - Mac/Linux: `sudo ./ddns-go -s uninstall`
-  - Win(以管理员打开cmd): `.\ddns-go.exe -s uninstall`
-- [可选] 支持安装带参数
-  - `-l` 监听地址
-  - `-f` 同步间隔时间(秒)
-  - `-cacheTimes` 间隔N次与服务商比对
-  - `-c` 自定义配置文件路径
-  - `-noweb` 不启动web服务
-  - `-skipVerify` 跳过证书验证
-  - `-dns` 自定义 DNS 服务器
-  - `-resetPassword` 重置密码
-- [可选] 参考示例
-  - 10分钟同步一次, 并指定了配置文件地址
-    ```bash
-    ./ddns-go -s install -f 600 -c /Users/name/.ddns_go_config.yaml
-    ```
-  - 每 10 秒检查一次本地 IP 变化, 每 30 分钟对比一下 IP 变化, 实现 IP 变化即时触发更新且不会被服务商限流, 如果使用接口获取IP, 需要注意接口限流
-    ```bash
-    ./ddns-go -s install -f 10 -cacheTimes 180
-    ```
-  - 重置密码
-    ```bash
-    ./ddns-go -resetPassword 123456
-    ./ddns-go -resetPassword 123456 -c /Users/name/.ddns_go_config.yaml
-    ```
+## IP 来源和选择算法
 
-## Docker中使用
+- **指定节点**：默认本机。使用指定节点的原有接口、网卡或命令结果；该节点不可用时跳过普通更新，不使用其他地址冒充。
+- **自动选择存活节点**：从探活成功且返回有效 IP 的节点中随机或轮询选取。
+- **IPv6 前缀＋自定义后缀**：从指定来源节点取得地址，以配置组当前前缀拼接自定义后缀，例如 `::1234`。IPv4 仍使用该来源节点的结果。
 
-- 挂载主机目录, 使用docker host模式。可把 `/opt/ddns-go` 替换为你主机任意目录, 配置文件为隐藏文件
+随机是默认算法，轮询在当前进程内按关联节点顺序轮转，重启后从头开始。`cluster.Selector` 和 `RegisterSelector` 可替换／扩展选择实现。IP 来源选择和 DNS 执行节点选择分别进行；普通更新和前缀批次都仅由一个选中的执行节点执行。
 
-  ```bash
-  docker run -d --name ddns-go --restart=always --net=host -v /opt/ddns-go:/root jeessy/ddns-go
-  ```
+`GET /ping` 无需登录，固定返回 `{"status":"ok"}`，不访问配置或数据库。远程探活最多并发 8 个，每个超时 2 秒。`/cluster/ip` 和 `/cluster/update` 使用独立的 Bearer 令牌和调度节点标识验证，并不公开。
 
-- 打开浏览器并访问`http://Docker主机IP:9876`进行初始化配置
+## IPv6 前缀变化
 
-- [可选] 使用 `ghcr.io` 镜像
+前缀长度默认为 64，可设为 1–128，支持 /57、/73 等非整字节长度。自定义后缀必须仅使用主机位，例如 /64 的 `::1234`。同一组中的地址应属于同一个前缀变化域，不能把不同网络的 IPv6 地址混为同组。
 
-  ```bash
-  docker run -d --name ddns-go --restart=always --net=host -v /opt/ddns-go:/root ghcr.io/jeessy2/ddns-go
-  ```
+在“集群管理”中为每个需要批量更新的节点填写独立 IPv6 域名（每行一个），可填写固定后缀，也可在节点首次上报时学习后缀。节点域名不能相互重复，也不能与配置表单中的普通 IPv6 域名重叠。普通域名用于所选来源地址；节点域名用于每个节点自己的重组地址。
 
-- [可选] 支持启动带参数 `-l`监听地址 `-f`间隔时间(秒)
+调度节点轮询各存活成员的 IP。当某成员上报不同的新前缀时，保留各节点已知后缀，以新前缀重组节点地址，然后再次探活并选取一个执行节点完成整个批次。已离线节点只要有已知后缀，也会更新其绑定域名；没有后缀时不猜测地址，任务报错等待补齐。首次获取前缀时也会初始化节点域名。不同节点同时报告相互冲突的新前缀时暂停更新。
 
-  ```bash
-  docker run -d --name ddns-go --restart=always --net=host -v /opt/ddns-go:/root jeessy/ddns-go -l :9877 -f 600
-  ```
+状态保存在配置文件旁的 `.cluster-state.json` 文件中。批次先持久化再执行，仅全部成功后确认新前缀。失败或重启后优先重试整个批次，因此提供的是至少一次执行；DNS 写入应是幂等的，Callback 服务也应支持重复调用。不会自动回滚已成功的外部 DNS 更新。
 
-- [可选] 不使用docker host模式
+## 审计存储
 
-  ```bash
-  docker run -d --name ddns-go --restart=always -p 9876:9876 -v /opt/ddns-go:/root jeessy/ddns-go
-  ```
+默认 SQLite 文件为 `<配置路径>.audit.db`。可以在集群页面配置驱动和 DSN，或在 YAML 中设置：
 
-- [可选] 重置密码
+```yaml
+audit:
+  driver: sqlite
+  dsn: /var/lib/ddns-go/audit.db
+```
 
-  ```bash
-  docker exec ddns-go ./ddns-go -resetPassword 123456
-  docker restart ddns-go
-  ```
+审计模块使用 `database/sql` 和无 CGO SQLite 驱动，不需要 SQLite 外部进程。记录采用 UTC 时间；查询页显示浏览器本地时间，并支持配置名称、节点名称、操作类型过滤和分页。
 
-## 使用IPv6
+审计包含配置和节点的添加、编辑、删除，登录、退出、设置变更、节点选择、前缀变化和 DNS 更新结果。密码、令牌、DNS 凭据及可能包含凭据的命令和 URL 不记录原文。DNS 更新的前值为执行进程上次成功应用的值，首次执行标为未知，不宣称它是实时查询到的权威 DNS 值。
 
-- 前提：你的电脑或终端能正常获取IPv6，并能正常访问IPv6
-- Windows/Mac：推荐 [系统中使用](#系统中使用)，Windows/Mac桌面版的docker不支持`--net=host`
-- 群晖：
-  - 套件中心下载docker并打开
-  - 注册表中搜索`ddns-go`并下载
-  - 映像 -> 选择`jeessy/ddns-go` -> 启动 -> 高级设置 -> 网络中勾选`使用与 Docker Host 相同的网络`，高级设置中勾选`启动自动重新启动`
-  - 在浏览器中打开`http://群晖IP:9876`，修改你的配置，成功
-- Linux的x86或arm架构，推荐使用Docker的`--net=host`模式。参考 [Docker中使用](#Docker中使用)
-- 虚拟机中使用有可能正常获取IPv6，但不能正常访问IPv6
+写入通过 1024 条有界队列异步处理，数据库写入不阻塞 DNS 业务。数据库失败或队列满时会输出服务日志，并在审计查询页显示未持久化事件计数；异常退出可能丢失尚未刷盘的事件。正常停止最多等待 5 秒刷新。此实现不是零丢失的合规审计系统。SQLite 文件和配置文件应存放在仅服务账户可访问的目录，备份时包含数据库及其 WAL 文件。
 
-## Webhook
+`audit.Store` 定义 `Append`、`Query`、`Close`，使用 `audit.Register("mysql", factory)` 或 `audit.Register("postgres", factory)` 注册额外适配器。适配器自行处理数据库驱动、连接、建表和 SQL 方言；当前仅内置 SQLite，不会因填写 MySQL/PostgreSQL DSN 自动安装驱动。
 
-- 支持webhook, 域名更新成功或不成功时, 会回调填写的URL
-- 支持的变量
+## 验证
 
-  | 变量名         | 说明                                     |
-  | -------------- | ---------------------------------------- |
-  | #{ipv4Addr}    | 新的IPv4地址                             |
-  | #{ipv4Result}  | IPv4地址更新结果: `未改变` `失败` `成功` |
-  | #{ipv4Domains} | IPv4的域名，多个以`,`分割                |
-  | #{ipv6Addr}    | 新的IPv6地址                             |
-  | #{ipv6Result}  | IPv6地址更新结果: `未改变` `失败` `成功` |
-  | #{ipv6Domains} | IPv6的域名，多个以`,`分割                |
-  | #{timestamp}   | 当前 UTC+0 时间戳（秒）                  |
+```sh
+make build test
+CGO_ENABLED=1 go test -race ./...
+GOARCH=arm64 CGO_ENABLED=0 go build ./...
+GOARCH=riscv64 CGO_ENABLED=0 go build ./...
+GOARCH=mipsle CGO_ENABLED=0 go build ./...
+```
 
-- 如 RequestBody 为空则为 GET 请求，否则为 POST 请求
-- <details><summary>Server酱</summary>
-
-  ```
-  https://sctapi.ftqq.com/[SendKey].send?title=你的公网IP变了&desp=主人IPv4变了#{ipv4Addr},域名更新结果:#{ipv4Result}
-  ```
-- <details><summary>Bark</summary>
-
-  ```
-  https://api.day.app/[YOUR_KEY]/主人IPv4变了#{ipv4Addr},域名更新结果:#{ipv4Result}
-  ```
-  </details>
-- <details><summary>钉钉</summary>
-
-  - 钉钉电脑端 -> 群设置 -> 智能群助手 -> 添加机器人 -> 自定义
-  - 只勾选 `自定义关键词`, 输入的关键字必须包含在RequestBody的content中, 如：`你的公网IP变了`
-  - URL中输入钉钉给你的 `Webhook地址`
-  - RequestBody中输入
-    ```json
-    {
-        "msgtype": "markdown",
-        "markdown": {
-            "title": "你的公网IP变了",
-            "text": "#### 你的公网IP变了 \n - IPv4地址：#{ipv4Addr} \n - 域名更新结果：#{ipv4Result} \n"
-        }
-    }
-    ```
-  </details>
-- <details><summary>飞书</summary>
-
-  - 飞书电脑端 -> 群设置 -> 添加机器人 -> 自定义机器人
-  - 安全设置只勾选 `自定义关键词`, 输入的关键字必须包含在RequestBody的content中, 如：`你的公网IP变了`
-  - URL中输入飞书给你的 `Webhook地址`
-  - RequestBody中输入
-    ```json
-    {
-        "msg_type": "post",
-        "content": {
-            "post": {
-                "zh_cn": {
-                    "title": "你的公网IP变了",
-                    "content": [
-                        [
-                            {
-                                "tag": "text",
-                                "text": "IPv4地址：#{ipv4Addr}"
-                            }
-                        ],
-                        [
-                            {
-                                "tag": "text",
-                                "text": "域名更新结果：#{ipv4Result}"
-                            }
-                        ]
-                    ]
-                }
-            }
-        }
-    }
-    ```
-  </details>
-- <details><summary>Telegram</summary>
-
-  [ddns-telegram-bot](https://github.com/WingLim/ddns-telegram-bot)
-  </details>
-- <details><summary>plusplus 推送加</summary>
-
-  - [获取token](https://www.pushplus.plus/push1.html)
-  - URL中输入 `https://www.pushplus.plus/send`
-  - RequestBody中输入
-    ```json
-    {
-        "token": "your token",
-        "title": "你的公网IP变了",
-        "content": "你的公网IP变了 \n - IPv4地址：#{ipv4Addr} \n - 域名更新结果：#{ipv4Result} \n"
-    }
-    ```
-  </details>
-- <details><summary>Discord</summary>
-
-  - Discord任意客户端 -> 伺服器 -> 频道设置 -> 整合 -> 查看Webhook -> 新Webhook -> 复制Webhook网址
-  - URL中输入Discord复制的 `Webhook网址`
-  - RequestBody中输入
-    ```json
-    {
-        "content": "域名 #{ipv4Domains} 动态解析 #{ipv4Result}.",
-        "embeds": [
-            {
-                "description": "#{ipv4Domains} 的动态解析 #{ipv4Result}, IP: #{ipv4Addr}",
-                "color": 15258703,
-                "author": {
-                    "name": "DDNS"
-                },
-                "footer": {
-                    "text": "DDNS #{ipv4Result}"
-                }
-            }
-        ]
-    }
-    ```
-  </details>
-- <details><summary>微信</summary>
-
-  - 通过 [微信 ClawBot 协议](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin) 推送消息到微信
-  - 需要先通过协议获取 $your_bot_token 和 $your_user_id，可参考 [1](https://github.com/hao-ji-xing/openclaw-weixin/blob/main/weixin-bot-api.md)
-  - URL 中输入 `https://ilinkai.weixin.qq.com/ilink/bot/sendmessage`
-  - RequestBody 中输入
-    ```json
-    {
-        "msg": {
-            "from_user_id": "",
-            "to_user_id": "$your_user_id@im.wechat",
-            "client_id": "ddns-#{timestamp}",
-            "message_type": 2,
-            "message_state": 2,
-            "item_list": [
-                {
-                    "type": 1,
-                    "text_item": {
-                        "text": "📡 IPv4: #{ipv4Result}\n   新地址: #{ipv4Addr}\n   已绑定域名: #{ipv4Domains}\n\n📡 IPv6: #{ipv6Result}\n   新地址: #{ipv6Addr}\n   已绑定域名: #{ipv6Domains}"
-                    }
-                }
-            ]
-        },
-        "base_info": {
-            "channel_version": "2.1.7"
-        }
-    }
-    ```
-  - Headers 中输入
-    ```
-    Content-Type: application/json
-    AuthorizationType: ilink_bot_token
-    Authorization: Bearer $your_bot_token
-    iLink-App-Id: bot
-    iLink-App-ClientVersion: 131335
-    ```
-  </details>
-
-- [查看更多Webhook配置参考](https://github.com/jeessy2/ddns-go/issues/327)
-
-## Callback
-
-- 通过自定义回调可支持更多的第三方DNS服务商
-- 配置的域名有几行, 就会回调几次
-- 支持的变量
-
-  | 变量名        | 说明                 |
-  | ------------- | -------------------- |
-  | #{ip}         | 新的IPv4/IPv6地址    |
-  | #{domain}     | 当前域名             |
-  | #{recordType} | 记录类型 `A`或`AAAA` |
-  | #{ttl}        | TTL                  |
-- 如 RequestBody 为空则为 GET 请求，否则为 POST 请求
-- [Callback配置参考](https://github.com/jeessy2/ddns-go/wiki/Callback配置参考)
-
-## 界面
-
-![screenshots](https://raw.githubusercontent.com/jeessy2/ddns-go/master/ddns-web.png)
-
-## 开发&自行编译
-
-- 如果喜欢从源代码编译自己的版本，可以使用本项目提供的 Makefile 构建
-- 使用 `make build` 生成本地编译后的 `ddns-go` 可执行文件
-- 使用 `make build_docker_image` 自行编译 Docker 镜像
+新增测试使用模拟节点和本地模拟 DNS 服务商，覆盖实际远程执行、离线节点、前缀变化、失败批次恢复、旧配置兼容、鉴权、表单序列化和 SQLite 持久化。无需真实 DNS 账户。

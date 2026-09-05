@@ -32,9 +32,12 @@ func Auth(f ViewFunc) ViewFunc {
 		}
 
 		// 验证token
-		if cookieInSystem.Value != "" &&
-			cookieInSystem.Value == cookieInWeb.Value &&
-			cookieInSystem.Expires.After(time.Now()) {
+		sessionMu.RLock()
+		cookie := *cookieInSystem
+		sessionMu.RUnlock()
+		if cookie.Value != "" &&
+			cookie.Value == cookieInWeb.Value &&
+			cookie.Expires.After(time.Now()) {
 			f(w, r) // 执行被装饰的函数
 			return
 		}

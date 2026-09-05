@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jeessy2/ddns-go/v6/util"
 	passwordvalidator "github.com/wagslane/go-password-validator"
@@ -30,8 +32,11 @@ var Ipv6Reg = regexp.MustCompile(`([0-9A-Fa-f:.]{2,})`)
 
 // DnsConfig 配置
 type DnsConfig struct {
-	Name string
-	Ipv4 struct {
+	ID       string // stable local identity for edits and audit history
+	Name     string
+	Cluster  ClusterPolicy
+	Resolved *ResolvedIP `yaml:"-" json:"-"`
+	Ipv4     struct {
 		Enable bool
 		// 获取IP类型 url/netInterface
 		GetType      string
@@ -68,6 +73,8 @@ type DNS struct {
 
 type Config struct {
 	DnsConf []DnsConfig
+	Cluster ClusterSettings
+	Audit   AuditSettings
 	User
 	Webhook
 	// 禁止公网访问
@@ -75,6 +82,20 @@ type Config struct {
 	// 语言
 	Lang string
 }
+
+type AuditSettings struct {
+	Driver string
+	DSN    string
+}
+
+// ResolvedIP is internal-only: peers never supply executable IP acquisition settings.
+type ResolvedIP struct {
+	IPv4 string
+	IPv6 string
+}
+
+// EditMu serializes read-modify-save operations from Web handlers.
+var EditMu sync.Mutex
 
 // ConfigCache ConfigCache
 type cacheType struct {
@@ -91,7 +112,7 @@ func GetConfigCached() (conf Config, err error) {
 	defer cache.Lock.Unlock()
 
 	if cache.ConfigSingle != nil {
-		return *cache.ConfigSingle, cache.Err
+		return cloneConfig(*cache.ConfigSingle), cache.Err
 	}
 
 	// init config
@@ -101,21 +122,21 @@ func GetConfigCached() (conf Config, err error) {
 	_, err = os.Stat(configFilePath)
 	if err != nil {
 		cache.Err = err
-		return *cache.ConfigSingle, err
+		return cloneConfig(*cache.ConfigSingle), err
 	}
 
 	byt, err := os.ReadFile(configFilePath)
 	if err != nil {
 		util.Log("异常信息: %s", err)
 		cache.Err = err
-		return *cache.ConfigSingle, err
+		return cloneConfig(*cache.ConfigSingle), err
 	}
 
 	err = yaml.Unmarshal(byt, cache.ConfigSingle)
 	if err != nil {
 		util.Log("异常信息: %s", err)
 		cache.Err = err
-		return *cache.ConfigSingle, err
+		return cloneConfig(*cache.ConfigSingle), err
 	}
 
 	// 未填写登录信息, 确保不能从公网访问
@@ -123,9 +144,11 @@ func GetConfigCached() (conf Config, err error) {
 		cache.ConfigSingle.NotAllowWanAccess = true
 	}
 
+	cache.ConfigSingle.ClusterDefaults()
+
 	// remove err
 	cache.Err = nil
-	return *cache.ConfigSingle, err
+	return cloneConfig(*cache.ConfigSingle), err
 }
 
 // CompatibleConfig 兼容之前的配置文件
@@ -298,19 +321,22 @@ func (conf *DnsConfig) getAddrFromCmd(addrType string) string {
 	if cmd == "" {
 		return ""
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	// run cmd with proper shell
 	var execCmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		execCmd = exec.Command("powershell", "-Command", cmd)
+		execCmd = exec.CommandContext(ctx, "powershell", "-Command", cmd)
 	} else {
 		// If Bash does not exist, use sh
 		_, err := exec.LookPath("bash")
 		if err != nil {
-			execCmd = exec.Command("sh", "-c", cmd)
+			execCmd = exec.CommandContext(ctx, "sh", "-c", cmd)
 		} else {
-			execCmd = exec.Command("bash", "-c", cmd)
+			execCmd = exec.CommandContext(ctx, "bash", "-c", cmd)
 		}
 	}
+	execCmd.WaitDelay = time.Second
 	// run cmd
 	out, err := execCmd.CombinedOutput()
 	if err != nil {
@@ -333,6 +359,9 @@ func (conf *DnsConfig) getAddrFromCmd(addrType string) string {
 
 // GetIpv4Addr 获得IPv4地址
 func (conf *DnsConfig) GetIpv4Addr() string {
+	if conf.Resolved != nil {
+		return conf.Resolved.IPv4
+	}
 	// 判断从哪里获取IP
 	switch conf.Ipv4.GetType {
 	case "netInterface":
@@ -424,6 +453,9 @@ func (conf *DnsConfig) getIpv6AddrFromUrl() string {
 
 // GetIpv6Addr 获得IPv6地址
 func (conf *DnsConfig) GetIpv6Addr() (result string) {
+	if conf.Resolved != nil {
+		return conf.Resolved.IPv6
+	}
 	// 判断从哪里获取IP
 	switch conf.Ipv6.GetType {
 	case "netInterface":
@@ -444,4 +476,15 @@ func (conf *DnsConfig) GetIpv6Addr() (result string) {
 // GetHTTPClient 获得HTTP客户端，如果配置了HttpInterface则绑定到指定网卡
 func (conf *DnsConfig) GetHTTPClient() *http.Client {
 	return util.CreateHTTPClientWithInterface(conf.HttpInterface)
+}
+
+// Return independent snapshots to keep background updates and Web edits race-free.
+func cloneConfig(c Config) Config {
+	c.Cluster.Nodes = append([]ClusterNode(nil), c.Cluster.Nodes...)
+	c.DnsConf = append([]DnsConfig(nil), c.DnsConf...)
+	for i := range c.DnsConf {
+		c.DnsConf[i].Ipv4.Domains = append([]string(nil), c.DnsConf[i].Ipv4.Domains...)
+		c.DnsConf[i].Ipv6.Domains = append([]string(nil), c.DnsConf[i].Ipv6.Domains...)
+	}
+	return c
 }

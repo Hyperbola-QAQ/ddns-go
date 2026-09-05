@@ -3,6 +3,7 @@ package util
 import (
 	"os"
 	"strconv"
+	"sync/atomic"
 )
 
 const IPCacheTimesENV = "DDNS_IP_CACHE_TIMES"
@@ -14,7 +15,9 @@ type IpCache struct {
 	TimesFailedIP int    // 获取ip失败的次数
 }
 
-var ForceCompareGlobal = true
+var ForceCompareGlobal atomic.Bool
+
+func init() { ForceCompareGlobal.Store(true) }
 
 func (d *IpCache) Check(newAddr string) bool {
 	if newAddr == "" {

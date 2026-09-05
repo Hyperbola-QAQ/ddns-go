@@ -3,10 +3,13 @@ package util
 import (
 	"log"
 	"strings"
+	"sync"
 
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 )
+
+var logMu sync.RWMutex
 
 var logLang = language.English
 var logPrinter = message.NewPrinter(logLang)
@@ -129,10 +132,14 @@ func Log(key string, args ...interface{}) {
 }
 
 func LogStr(key string, args ...interface{}) string {
+	logMu.RLock()
+	defer logMu.RUnlock()
 	return logPrinter.Sprintf(key, args...)
 }
 
 func InitLogLang(lang string) string {
+	logMu.Lock()
+	defer logMu.Unlock()
 	newLang := language.English
 	if strings.HasPrefix(lang, "zh") {
 		newLang = language.Chinese

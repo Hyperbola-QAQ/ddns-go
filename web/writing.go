@@ -12,13 +12,15 @@ import (
 	"github.com/jeessy2/ddns-go/v6/config"
 )
 
-//go:embed writing.html
+//go:embed writing.html management.html
 var writingEmbedFile embed.FS
 
 const VersionEnv = "DDNS_GO_VERSION"
 
 // js中的dns配置
 type dnsConf4JS struct {
+	ID               string
+	Cluster          config.ClusterPolicy
 	Name             string
 	DnsName          string
 	DnsID            string
@@ -56,6 +58,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 		conf.NotAllowWanAccess = true
 	}
 
+	conf.ClusterDefaults()
 	ipv4, ipv6, _ := config.GetNetInterface()
 
 	// 获取所有网卡（去重合并IPv4和IPv6网卡名称）
@@ -72,6 +75,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	err = tmpl.Execute(writer, struct {
+		LocalID           string
 		DnsConf           template.JS
 		NotAllowWanAccess bool
 		Username          string
@@ -82,6 +86,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 		Ipv6          []config.NetInterface
 		AllInterfaces []config.NetInterface
 	}{
+		LocalID:           conf.Cluster.LocalID,
 		DnsConf:           template.JS(getDnsConfStr(conf.DnsConf)),
 		NotAllowWanAccess: conf.NotAllowWanAccess,
 		Username:          conf.User.Username,
@@ -104,7 +109,9 @@ func getDnsConfStr(dnsConf []config.DnsConfig) string {
 		// 已存在配置文件，隐藏真实的ID、Secret
 		idHide, secretHide := getHideIDSecret(&conf)
 		dnsConfArray = append(dnsConfArray, dnsConf4JS{
+			ID:               conf.ID,
 			Name:             conf.Name,
+			Cluster:          conf.Cluster,
 			DnsName:          conf.DNS.Name,
 			DnsID:            idHide,
 			DnsSecret:        secretHide,

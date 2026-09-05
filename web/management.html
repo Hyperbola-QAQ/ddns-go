@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark"><title>DDNS-GO · 集群与审计</title>
+  <link rel="stylesheet" href="./static/bootstrap.min.css"><link class="theme" rel="stylesheet" href="./static/common.css">
+  <link rel="stylesheet" href="./static/theme-button.css">
+  <script src="./static/constant.js"></script><script src="./static/utils.js"></script><script src="./static/i18n.js"></script>
+  <style>main { color: var(--text-color); } .table { color: inherit; table-layout: fixed; } pre { color: inherit; white-space: pre-wrap; word-break: break-word; } .form-group > label { width: 100%; }</style>
+</head>
+<body>
+<header class="navbar navbar-dark bg-dark shadow-sm"><div class="container d-flex flex-wrap align-items-center">
+  <a class="navbar-brand" href="./">DDNS-GO</a>
+  <nav><a class="btn btn-info btn-sm" href="./">配置管理</a> <a class="btn btn-info btn-sm" href="./cluster">集群管理</a> <a class="btn btn-info btn-sm" href="./audit">审计日志</a> <a class="btn btn-secondary btn-sm" href="./logout">退出</a></nav><span class="theme-button gg-dark-mode" id="themeButton" title="切换主题"></span>
+</div></header>
+<main class="container py-3">
+<p id="message" role="status" aria-live="polite"></p>
+{{if eq . "cluster"}}
+<section class="portlet"><h5 class="portlet__head">集群管理</h5><div class="portlet__body">
+<p>各节点使用相同的配置组标识、成员 ID 和调度节点 ID。每组只由指定调度节点发起任务，选中的存活节点使用自己的 DNS 凭据执行更新。</p>
+<div class="form-group"><label for="localID">本机节点 ID</label><input class="form-control" id="localID" value="local"><small class="text-muted">全组唯一且稳定，例如 router-a。首次配置时设置，启用集群后不要随意修改。</small></div>
+<div class="form-group"><label for="token">本机访问令牌</label><input class="form-control" id="token" type="password" autocomplete="new-password"><small class="text-muted">至少 32 字符；留空保留原值。将同一令牌填到其他节点对此节点的访问令牌中。</small> <button type="button" id="generate" class="btn btn-secondary btn-sm">生成令牌</button></div>
+<div class="form-group"><label for="driver">审计数据库驱动</label><input class="form-control" id="driver" placeholder="sqlite"><small class="text-muted">内置 sqlite；其他驱动需注册存储适配器。数据库设置在重启后生效。</small></div>
+<div class="form-group"><label for="dsn">审计数据库路径 / DSN</label><input class="form-control" id="dsn" placeholder="默认：配置文件路径.audit.db"></div>
+</div></section>
+<div class="d-flex justify-content-between my-3"><h5>关联节点</h5><button id="add" class="btn btn-secondary">添加节点</button></div>
+<div id="nodes"></div>
+<button id="save" class="btn btn-primary">保存集群设置</button>
+<p class="text-muted mt-2">本机也可添加到列表以编辑名称、所属组、后缀和域名。本机访问地址可留空。节点域名用于前缀变更批量更新，每行一个，与配置主域名保持独立。</p>
+<template id="nodeTemplate"><section class="portlet"><div class="portlet__body">
+<div class="row">
+<div class="form-group col-md-4"><label>节点 ID<input data-field="ID" class="form-control" required></label></div>
+<div class="form-group col-md-4"><label>节点名称<input data-field="Name" class="form-control"></label></div>
+<div class="form-group col-md-4"><label>配置组标识<input data-field="Group" class="form-control"></label></div>
+</div>
+<div class="form-group"><label>访问地址<input data-field="URL" class="form-control" placeholder="https://node.example.com"></label></div>
+<div class="form-group"><label>访问此节点的令牌<input data-field="Token" class="form-control" type="password" autocomplete="new-password" placeholder="留空保留"></label></div>
+<div class="form-group"><label>IPv6 后缀<input data-field="Suffix" class="form-control" placeholder="::1234；留空从上报地址保留后缀"></label></div>
+<div class="form-group"><label>该节点的 IPv6 域名<textarea data-field="IPv6Domains" class="form-control" rows="2" placeholder="host.example.com"></textarea></label></div>
+<button type="button" class="btn btn-outline-danger remove">删除节点</button>
+</div></section></template>
+{{else}}
+<section class="portlet"><h5 class="portlet__head">审计日志</h5><div class="portlet__body">
+<div class="row"><div class="col-md-3 form-group"><label for="config">配置名称</label><input class="form-control" id="config"></div><div class="col-md-3 form-group"><label for="node">节点名称</label><input class="form-control" id="node"></div><div class="col-md-3 form-group"><label for="operation">操作类型</label><input class="form-control" id="operation" placeholder="例如 config.edit"></div><div class="col-md-3 form-group"><button id="query" class="btn btn-primary mt-4">查询</button></div></div>
+<p>时间以浏览器本地时区显示。变更值已脱敏；DNS 更新的变更前值表示本进程上次成功应用的值，首次执行显示未知。</p>
+<div class="table-responsive"><table class="table table-striped"><colgroup><col style="width:20%"><col style="width:18%"><col style="width:26%"><col style="width:26%"><col style="width:10%"></colgroup><thead><tr><th>时间 / 操作人 / 主机</th><th>操作 / 配置 / 节点</th><th>变更前</th><th>变更后</th><th>结果</th></tr></thead><tbody id="events"></tbody></table></div>
+<button id="prev" class="btn btn-secondary">上一页</button> <span id="page"></span> <button id="next" class="btn btn-secondary">下一页</button>
+</div></section>
+{{end}}
+</main>
+<script>
+const message = document.getElementById('message');
+async function api(path, data) {
+ const response = await fetch(path, data === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+ if (response.redirected) { location.href='./login'; throw new Error('请重新登录'); }
+ if (!response.ok) throw new Error(await response.text());
+ return response.json();
+}
+function fail(e) { message.textContent = e.message; message.className='text-danger'; }
+if (document.getElementById('nodes')) {
+ const nodes = document.getElementById('nodes');
+ function addNode(node={}) {
+  const card=document.getElementById('nodeTemplate').content.cloneNode(true);
+  card.querySelectorAll('[data-field]').forEach(input=>input.value=node[input.dataset.field]||'');
+  card.querySelector('.remove').onclick=e=>e.target.closest('section').remove(); nodes.append(card);
+ }
+ document.getElementById('add').onclick=()=>addNode();
+ document.getElementById('generate').onclick=()=>{
+  const bytes=crypto.getRandomValues(new Uint8Array(32)); const input=document.getElementById('token');
+  input.value=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join(''); input.type='text';
+  message.textContent='请复制此令牌，保存后不会再次显示。';
+ };
+ document.getElementById('save').onclick=async()=>{
+  try {
+   const list=Array.from(nodes.children,card=>Object.fromEntries(Array.from(card.querySelectorAll('[data-field]'),input=>[input.dataset.field,input.value.trim()])));
+   await api('./cluster/settings',{Cluster:{LocalID:document.getElementById('localID').value.trim(),Token:document.getElementById('token').value,Nodes:list},Audit:{Driver:document.getElementById('driver').value.trim(),DSN:document.getElementById('dsn').value.trim()}});
+   document.querySelectorAll('input[data-field="Token"]').forEach(input=>input.value='');document.getElementById('token').value='';
+   message.className='text-success';message.textContent='已保存。请在配置管理中关联节点并指定调度节点；数据库设置重启后生效。';
+  } catch(e){fail(e);}
+ };
+ api('./cluster/settings').then(data=>{
+  document.getElementById('localID').value=data.Cluster.LocalID;document.getElementById('driver').value=data.Audit.Driver||'sqlite';document.getElementById('dsn').value=data.Audit.DSN||'';
+  (data.Cluster.Nodes||[]).forEach(addNode);
+ }).catch(fail);
+} else {
+ let offset=0;
+ async function query() {
+  try{
+   const params=new URLSearchParams({offset,limit:50,config:document.getElementById('config').value,node:document.getElementById('node').value,operation:document.getElementById('operation').value});
+   const data=await api('./audit/events?'+params); const body=document.getElementById('events');body.replaceChildren();
+   for(const event of data.Events){const row=document.createElement('tr');for(const value of [new Date(event.Time).toLocaleString()+' / '+event.Actor+' / '+event.Host,event.Operation+' / '+event.Config+' / '+event.Node,event.Before,event.After,event.Result]){const cell=document.createElement('td');if(value && value.length>160){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent='展开查看';const pre=document.createElement('pre');pre.textContent=value;details.append(summary,pre);cell.append(details);}else{cell.textContent=value;}cell.style.whiteSpace='pre-wrap';cell.style.wordBreak='break-word';row.append(cell);}body.append(row);}
+   document.getElementById('prev').disabled=offset===0;document.getElementById('next').disabled=data.Events.length<50;document.getElementById('page').textContent='第 '+(offset/50+1)+' 页';
+   message.textContent=data.Lost?'未持久化事件：'+data.Lost+'。请检查数据库与服务日志。':'';
+  }catch(e){fail(e);}
+ }
+ document.getElementById('query').onclick=()=>{offset=0;query();};document.getElementById('prev').onclick=()=>{offset=Math.max(0,offset-50);query();};document.getElementById('next').onclick=()=>{offset+=50;query();};query();
+}
+</script>
+<script src="./static/theme.js"></script>
+</body></html>

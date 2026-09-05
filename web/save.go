@@ -12,6 +12,10 @@ import (
 
 // Save 保存
 func Save(writer http.ResponseWriter, request *http.Request) {
+	if !jsonMutation(writer, request) {
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, 1<<20)
 	result := checkAndSave(request)
 	dnsConfJsonStr := "[]"
 	if result == "ok" {
@@ -24,7 +28,10 @@ func Save(writer http.ResponseWriter, request *http.Request) {
 }
 
 func checkAndSave(request *http.Request) string {
+	config.EditMu.Lock()
+	defer config.EditMu.Unlock()
 	conf, _ := config.GetConfigCached()
+	old := conf
 
 	// 从请求中读取 JSON 数据
 	var data struct {
@@ -79,7 +86,7 @@ func checkAndSave(request *http.Request) string {
 		if v == empty {
 			continue
 		}
-		dnsConf := config.DnsConfig{Name: v.Name, TTL: v.TTL}
+		dnsConf := config.DnsConfig{ID: v.ID, Name: v.Name, TTL: v.TTL, Cluster: v.Cluster}
 		// 覆盖以前的配置
 		dnsConf.DNS.Name = v.DnsName
 		dnsConf.DNS.ID = strings.TrimSpace(v.DnsID)
@@ -106,8 +113,20 @@ func checkAndSave(request *http.Request) string {
 		dnsConf.Ipv6.Domains = util.SplitLines(v.Ipv6Domains)
 		dnsConf.HttpInterface = strings.TrimSpace(v.HttpInterface)
 
-		if k < len(conf.DnsConf) {
-			c := &conf.DnsConf[k]
+		var previous *config.DnsConfig
+		for i := range conf.DnsConf {
+			if v.ID != "" && conf.DnsConf[i].ID == v.ID {
+				previous = &conf.DnsConf[i]
+				break
+			}
+		}
+		// Old clients without IDs keep the legacy index-based credential preservation.
+		if previous == nil && v.ID == "" && k < len(conf.DnsConf) {
+			previous = &conf.DnsConf[k]
+			dnsConf.ID = previous.ID
+		}
+		if previous != nil {
+			c := previous
 			idHide, secretHide := getHideIDSecret(c)
 			if dnsConf.DNS.ID == idHide {
 				dnsConf.DNS.ID = c.DNS.ID
@@ -121,16 +140,21 @@ func checkAndSave(request *http.Request) string {
 	}
 	conf.DnsConf = dnsConfArray
 
+	conf.ClusterDefaults()
+	if err := conf.ValidateCluster(); err != nil {
+		return err.Error()
+	}
+
 	// 保存到用户目录
 	err = conf.SaveConfig()
 
-	// 只运行一次
-	util.ForceCompareGlobal = true
-	go dns.RunOnce()
-
-	// 回写错误信息
 	if err != nil {
 		return err.Error()
 	}
+	auditConfigChanges(request, old, conf)
+
+	// 只运行一次
+	dns.RequestRun()
+
 	return "ok"
 }

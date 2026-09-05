@@ -31,3 +31,9 @@ coverage.html
 # Emacs backup files
 *~
 .*~
+
+# Local cluster state and audit databases
+*.cluster-state.json
+*.audit.db
+*.audit.db-shm
+*.audit.db-wal

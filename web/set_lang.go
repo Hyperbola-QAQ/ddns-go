@@ -10,7 +10,10 @@ import (
 )
 
 func SetLang(writer http.ResponseWriter, request *http.Request) {
+	config.EditMu.Lock()
+	defer config.EditMu.Unlock()
 	conf, _ := config.GetConfigCached()
+	previous := conf.Lang
 
 	var data struct {
 		Lang string `json:"Lang"`
@@ -32,6 +35,7 @@ func SetLang(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	recordChange(request, conf, "settings.language", "", conf.Cluster.LocalID, previous, conf.Lang)
 	byt, _ := json.Marshal(map[string]string{"result": "ok", "lang": conf.Lang})
 	writer.Write(byt)
 }

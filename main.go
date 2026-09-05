@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"flag"
@@ -10,11 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"syscall"
 	"time"
 
+	"github.com/jeessy2/ddns-go/v6/audit"
 	"github.com/jeessy2/ddns-go/v6/config"
 	"github.com/jeessy2/ddns-go/v6/dns"
 	"github.com/jeessy2/ddns-go/v6/util"
@@ -158,6 +162,28 @@ func run() {
 	conf.CompatibleConfig()
 	// 初始化语言
 	util.InitLogLang(conf.Lang)
+	auditDSN := conf.Audit.DSN
+	if auditDSN == "" {
+		auditDSN = util.GetConfigFilePath() + ".audit.db"
+	}
+	var auditErr error
+	audit.Default, auditErr = audit.Open(conf.Audit.Driver, auditDSN)
+	if auditErr != nil {
+		log.Print("审计数据库初始化失败: ", auditErr)
+	}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-stop
+		if audit.Default != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := audit.Default.Shutdown(ctx); err != nil {
+				log.Print("审计队列退出刷新超时: ", err)
+			}
+		}
+		os.Exit(0)
+	}()
 
 	if !*noWebService {
 		go func() {
@@ -190,6 +216,13 @@ func faviconFsFunc(writer http.ResponseWriter, request *http.Request) {
 }
 
 func runWebServer() error {
+	http.HandleFunc("/ping", web.Ping)
+	http.HandleFunc("/cluster", web.Auth(web.ManagementPage))
+	http.HandleFunc("/cluster/settings", web.Auth(web.ClusterSettings))
+	http.HandleFunc("/cluster/ip", web.PeerAuth(web.ClusterIP))
+	http.HandleFunc("/cluster/update", web.PeerAuth(web.ClusterUpdate))
+	http.HandleFunc("/audit", web.Auth(web.ManagementPage))
+	http.HandleFunc("/audit/events", web.Auth(web.AuditEvents))
 	// 启动静态文件服务
 	http.HandleFunc("/static/", web.AuthAssert(staticFsFunc))
 	http.HandleFunc("/favicon.ico", web.AuthAssert(faviconFsFunc))
@@ -257,7 +290,12 @@ func (p *program) run() {
 	run()
 }
 func (p *program) Stop(s service.Service) error {
-	// Stop should not block. Return with a few seconds.
+	// Flush queued audit records on service shutdown.
+	if audit.Default != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return audit.Default.Shutdown(ctx)
+	}
 	return nil
 }
 

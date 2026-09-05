@@ -106,6 +106,7 @@ const request = {
     }
     const response = await fetch(`${this.baseURL}${path}`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: data
     })
     if (response.redirected) {

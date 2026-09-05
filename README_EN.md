@@ -166,3 +166,7 @@ Automatically obtain your public IPv4 or IPv6 address and resolve it to the corr
 ## Web interfaces
 
 ![screenshots](https://raw.githubusercontent.com/jeessy2/ddns-go/master/ddns-web.png)
+
+## Distributed cluster
+
+Opt-in cluster configuration adds node health checks, remote DNS execution, IPv6 prefix propagation, and asynchronous auditing. See the [cluster guide (Chinese)](docs/distributed-cluster.md) for setup and operational limitations.
