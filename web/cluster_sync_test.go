@@ -2,7 +2,6 @@ package web
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeessy2/ddns-go/v6/cluster"
 	"github.com/jeessy2/ddns-go/v6/config"
 )
 
@@ -87,23 +85,16 @@ func TestConfigPushAndRecovery(t *testing.T) {
 		t.Fatal("reconnected peer not repaired")
 	}
 }
-func TestSingleLoginLeaseAndLogout(t *testing.T) {
+func TestLocalSessionAndLogout(t *testing.T) {
 	c := setupCluster(t)
 	c.Cluster.Nodes = nil
 	if err := c.SaveConfig(); err != nil {
 		t.Fatal(err)
 	}
-	lease, err := acquireLogin(context.Background(), c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lease.Release()
 	sessionMu.Lock()
-	loginLease = lease
-	sessionSeen = map[string]time.Time{"test": time.Now()}
 	sessions = map[string]http.Cookie{"test": {Name: cookieName, Value: "test", Expires: time.Now().Add(time.Hour)}}
 	sessionMu.Unlock()
-	defer func() { sessionMu.Lock(); loginLease = nil; sessions = map[string]http.Cookie{}; sessionMu.Unlock() }()
+	defer invalidateSessions()
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: cookieName, Value: "test"})
 	w := httptest.NewRecorder()
@@ -117,13 +108,11 @@ func TestSingleLoginLeaseAndLogout(t *testing.T) {
 	if w.Code != 307 {
 		t.Fatal("logout did not invalidate cookie")
 	}
-	if _, err := cluster.Acquire(context.Background(), c, cluster.Members(c), "session"); err != nil {
-		t.Fatal("logout did not release cluster claim")
-	}
-	cluster.LocalClaims = cluster.NewClaims()
+
 }
 func TestSeparatePageSavesPolicy(t *testing.T) {
 	c := setupCluster(t)
+	c.Cluster.Nodes = append(c.Cluster.Nodes, config.ClusterNode{ID: "self", URL: "http://self"})
 	c.DnsConf = []config.DnsConfig{{ID: "one", Name: "home"}}
 	c.ClusterDefaults()
 	if err := c.SaveConfig(); err != nil {
@@ -147,9 +136,9 @@ func TestSeparatePageSavesPolicy(t *testing.T) {
 	}
 }
 
-func TestMultipleSessionsStayOnOneNode(t *testing.T) {
+func TestMultipleSessionsWithoutPeerLease(t *testing.T) {
 	c := setupCluster(t)
-	c.Cluster.Nodes = nil
+	c.Cluster.Nodes = []config.ClusterNode{{ID: "offline", URL: "http://127.0.0.1:1", Token: strings.Repeat("x", 32)}}
 	c.Password = ""
 	c.Username = ""
 	if err := c.SaveConfig(); err != nil {
@@ -184,12 +173,6 @@ func TestMultipleSessionsStayOnOneNode(t *testing.T) {
 	req := httptest.NewRequest("GET", "/logout", nil)
 	req.AddCookie(first)
 	Logout(httptest.NewRecorder(), req)
-	sessionMu.RLock()
-	live := loginLease.Valid()
-	sessionMu.RUnlock()
-	if !live {
-		t.Fatal("logging out one session released node occupancy")
-	}
 	req = httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(second)
 	w := httptest.NewRecorder()
@@ -203,5 +186,43 @@ func TestMultipleSessionsStayOnOneNode(t *testing.T) {
 	sessionMu.RUnlock()
 	if remaining != 0 {
 		t.Fatal("last logout left sessions")
+	}
+}
+
+func TestFirstJoinRegistersSenderAndSynchronizesConfig(t *testing.T) {
+	c := setupCluster(t)
+	c.Cluster.Nodes = nil
+	c.Cluster.Version = config.SyncVersion{Counter: 100, Node: "self"}
+	if err := c.SaveConfig(); err != nil {
+		t.Fatal(err)
+	}
+	s := sharedSnapshot(c)
+	s.Version = config.SyncVersion{Counter: 1, Node: "new", Actor: "admin"}
+	s.Nodes = []config.ClusterNode{{ID: "self", URL: "http://self", Token: c.Cluster.Token}, {ID: "new", URL: "http://new", Token: strings.Repeat("n", 32)}}
+	s.Configs = []config.DnsConfig{{ID: "from-new", Name: "new configuration"}}
+	body, _ := json.Marshal(s)
+	for _, token := range []string{"wrong", c.Cluster.Token} {
+		r := httptest.NewRequest("POST", "/cluster/join", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("X-DDNS-Node", "new")
+		w := httptest.NewRecorder()
+		PeerTokenAuth(ClusterJoin)(w, r)
+		if token == "wrong" {
+			if w.Code != 401 {
+				t.Fatal("join accepted bad token")
+			}
+			continue
+		}
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	got, _ := config.GetConfigCached()
+	if n, ok := got.Node("new"); !ok || n.URL != "http://new" || n.Token != strings.Repeat("n", 32) {
+		t.Fatal("sender not enrolled")
+	}
+	if got.Cluster.LocalID != "self" || got.Cluster.Token != c.Cluster.Token || got.Cluster.Version.Counter != 101 || got.DnsConf[0].ID != "from-new" {
+		t.Fatal("join did not preserve identity and adopt source")
 	}
 }

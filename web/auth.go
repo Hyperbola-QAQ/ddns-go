@@ -35,10 +35,8 @@ func Auth(f ViewFunc) ViewFunc {
 		// 验证token
 		sessionMu.RLock()
 		cookie := sessions[cookieInWeb.Value]
-		lease := loginLease
-		seen := sessionSeen[cookieInWeb.Value]
 		sessionMu.RUnlock()
-		if lease.Valid() && time.Since(seen) < 45*time.Second && cookie.Value != "" &&
+		if cookie.Value != "" &&
 			cookie.Value == cookieInWeb.Value &&
 			cookie.Expires.After(time.Now()) {
 			f(w, r) // 执行被装饰的函数

@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/json"
@@ -27,7 +26,6 @@ const cookieName = "token"
 var sessionMu sync.RWMutex
 
 var sessions = map[string]http.Cookie{}
-var sessionSeen = map[string]time.Time{}
 
 // 服务启动时间
 var startTime = time.Now()
@@ -138,19 +136,6 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 	// 登录
 	if data.Username == conf.Username && util.PasswordOK(conf.Password, data.Password) {
 		conf.ClusterDefaults()
-		sessionMu.RLock()
-		lease := loginLease
-		sessionMu.RUnlock()
-		newLease := lease == nil || !lease.Valid()
-		if newLease {
-			ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-			lease, err = acquireLogin(ctx, conf)
-			cancel()
-			if err != nil {
-				returnError(w, "其他节点已登录或集群节点不可达，请退出其他节点后重试")
-				return
-			}
-		}
 		ld.ticker.Stop()
 		ld.failedTimes = 0
 
@@ -162,15 +147,9 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sessionMu.Lock()
-		if newLease {
-			sessions = map[string]http.Cookie{}
-			sessionSeen = map[string]time.Time{}
-		}
 		pruneSessions(time.Now())
-		loginLease = lease
 		cookie := http.Cookie{Name: cookieName, Value: rand.Text(), Path: "/", Expires: time.Now().AddDate(0, 0, timeoutDays), HttpOnly: true, SameSite: http.SameSiteLaxMode}
 		sessions[cookie.Value] = cookie
-		sessionSeen[cookie.Value] = time.Now()
 		http.SetCookie(w, &cookie)
 		token := cookie.Value
 		sessionMu.Unlock()
@@ -207,21 +186,14 @@ func loginUnlock() {
 func invalidateSessions() {
 	sessionMu.Lock()
 	sessions = map[string]http.Cookie{}
-	sessionSeen = map[string]time.Time{}
-	lease := loginLease
-	loginLease = nil
 	sessionMu.Unlock()
-	if lease != nil {
-		go lease.Release()
-	}
 }
 
-// Called under sessionMu; closing the last active page eventually releases occupancy.
+// Called under sessionMu; sessions expire independently of peer availability.
 func pruneSessions(now time.Time) {
 	for token, cookie := range sessions {
-		if !cookie.Expires.After(now) || now.Sub(sessionSeen[token]) >= 45*time.Second {
+		if !cookie.Expires.After(now) {
 			delete(sessions, token)
-			delete(sessionSeen, token)
 		}
 	}
 }

@@ -51,6 +51,7 @@ func TestPingAndPeerAuth(t *testing.T) {
 }
 func TestClusterSettingsShowTokensAndRejectCSRF(t *testing.T) {
 	c := setupCluster(t)
+	c.Cluster.Nodes = append(c.Cluster.Nodes, config.ClusterNode{ID: "self", URL: "http://self"})
 	w := httptest.NewRecorder()
 	ClusterSettings(w, httptest.NewRequest("GET", "/cluster/settings", nil))
 	if !strings.Contains(w.Body.String(), c.Cluster.Token) || !strings.Contains(w.Body.String(), c.Cluster.Nodes[0].Token) {
@@ -195,5 +196,16 @@ func TestNodeInterfacesReadsTargetNode(t *testing.T) {
 	NodeInterfaces(w, httptest.NewRequest("GET", "/cluster/interfaces?node=unknown", nil))
 	if w.Code != 404 {
 		t.Fatal("unknown node accepted")
+	}
+}
+
+func TestGenerateTokenOnPlainHTTP(t *testing.T) {
+	r := httptest.NewRequest("POST", "http://node/cluster/token", strings.NewReader("{}"))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	GenerateClusterToken(w, r)
+	var got struct{ Token string }
+	if json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got.Token) != 64 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("token generation failed")
 	}
 }

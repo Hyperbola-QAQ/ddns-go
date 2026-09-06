@@ -49,6 +49,18 @@ func jsonMutation(w http.ResponseWriter, r *http.Request) bool {
 
 // Peer authentication is separate from session cookies; only ping is public.
 func PeerAuth(f ViewFunc) ViewFunc {
+	return PeerTokenAuth(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := config.GetConfigCached()
+		if _, ok := c.Node(r.Header.Get("X-DDNS-Node")); !ok {
+			http.Error(w, "unknown node", 403)
+			return
+		}
+		f(w, r)
+	})
+}
+
+// Possession of the target's token permits initial enrollment, before peers know each other.
+func PeerTokenAuth(f ViewFunc) ViewFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := config.GetConfigCached()
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -56,12 +68,21 @@ func PeerAuth(f ViewFunc) ViewFunc {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
-		if _, ok := c.Node(r.Header.Get("X-DDNS-Node")); !ok {
-			http.Error(w, "unknown node", 403)
-			return
-		}
 		f(w, r)
 	}
+}
+
+func GenerateClusterToken(w http.ResponseWriter, r *http.Request) {
+	if !jsonMutation(w, r) {
+		return
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		http.Error(w, "生成令牌失败", 500)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, map[string]string{"Token": hex.EncodeToString(b)})
 }
 func groupConfig(c config.Config, group string) (config.DnsConfig, bool) {
 	for _, d := range c.DnsConf {
@@ -109,15 +130,17 @@ func policyViews(c config.Config) []clusterPolicyView {
 }
 
 func ClusterSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == "GET" {
 		c, _ := config.GetConfigCached()
 		c.ClusterDefaults()
 		jsonResponse(w, struct {
-			Cluster    config.ClusterSettings
-			Audit      config.AuditSettings
-			Policies   []clusterPolicyView
-			SyncErrors map[string]string
-		}{c.Cluster, c.Audit, policyViews(c), clusterSyncErrors()})
+			Cluster     config.ClusterSettings
+			Audit       config.AuditSettings
+			Policies    []clusterPolicyView
+			SyncErrors  map[string]string
+			SyncPending bool
+		}{c.Cluster, c.Audit, policyViews(c), clusterSyncErrors(), clusterSyncPending()})
 		return
 	}
 	if !jsonMutation(w, r) {
@@ -180,6 +203,13 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	c.Audit = in.Audit
 	c.ClusterDefaults()
+	if len(cluster.Members(c)) > 1 {
+		self, _ := c.Node(c.Cluster.LocalID)
+		if self.URL == "" {
+			http.Error(w, "请在关联节点中填写本机节点的访问地址，以便其他节点自动加入并回传配置", 400)
+			return
+		}
+	}
 	if err := c.ValidateCluster(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return

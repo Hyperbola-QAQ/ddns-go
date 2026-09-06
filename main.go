@@ -227,7 +227,8 @@ func runWebServer() error {
 	http.HandleFunc("/cluster/claim", web.PeerAuth(web.ClusterClaim))
 	http.HandleFunc("/cluster/state", web.PeerAuth(web.ClusterState))
 	http.HandleFunc("/cluster/sync", web.PeerAuth(web.ClusterSync))
-	http.HandleFunc("/cluster/session/keepalive", web.Auth(web.SessionKeepalive))
+	http.HandleFunc("/cluster/join", web.PeerTokenAuth(web.ClusterJoin))
+	http.HandleFunc("/cluster/token", web.Auth(web.GenerateClusterToken))
 	http.HandleFunc("/audit", web.Auth(web.ManagementPage))
 	http.HandleFunc("/audit/events", web.Auth(web.AuditEvents))
 	// 启动静态文件服务

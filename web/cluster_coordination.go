@@ -82,40 +82,6 @@ func ClusterState(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
-var loginLease *cluster.Lease // guarded by sessionMu, cookie remains local and is never broadcast
-func acquireLogin(ctx context.Context, c config.Config) (*cluster.Lease, error) {
-	return cluster.Acquire(ctx, c, cluster.Members(c), "session")
-}
-func SessionKeepalive(w http.ResponseWriter, r *http.Request) {
-	if !jsonMutation(w, r) {
-		return
-	}
-	sessionMu.RLock()
-	lease := loginLease
-	sessionMu.RUnlock()
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-	defer cancel()
-	c, _ := config.GetConfigCached()
-	next, ok := lease.Reconcile(ctx, c)
-	if !ok {
-		if lease != nil {
-			lease.Release()
-		}
-		http.Error(w, "集群登录占用已失效，请重新登录", 401)
-		return
-	}
-	sessionMu.Lock()
-	if loginLease == lease {
-		if cookie, err := r.Cookie(cookieName); err == nil {
-			sessionSeen[cookie.Value] = time.Now()
-		}
-		pruneSessions(time.Now())
-		loginLease = next
-	}
-	sessionMu.Unlock()
-	jsonResponse(w, map[string]string{"status": "ok"})
-}
-
 // ClusterNetInterfaces returns this node's actual interfaces and address lifetimes.
 func ClusterNetInterfaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
