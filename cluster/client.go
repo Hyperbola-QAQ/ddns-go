@@ -18,6 +18,15 @@ import (
 
 var Client = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
+type HTTPError struct {
+	NodeID string
+	Status int
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("节点 %s 返回 HTTP %d", e.NodeID, e.Status)
+}
+
 type Job struct {
 	CustomSuffix bool
 	NodeID       string
@@ -53,7 +62,7 @@ func request(ctx context.Context, n config.ClusterNode, local, method, path stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("节点 %s 返回 HTTP %d", n.ID, resp.StatusCode)
+		return &HTTPError{NodeID: n.ID, Status: resp.StatusCode}
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }

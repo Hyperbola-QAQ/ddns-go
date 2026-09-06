@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -221,6 +222,15 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	in.Cluster.Version = c.Cluster.Version
+	for _, n := range in.Cluster.Nodes {
+		if n.ID == in.Cluster.LocalID {
+			continue
+		}
+		_, exists := c.Node(n.ID)
+		if !exists || slices.Contains(c.Cluster.JoinTargets, n.ID) {
+			in.Cluster.JoinTargets = append(in.Cluster.JoinTargets, n.ID)
+		}
+	}
 	c.Cluster = in.Cluster
 	for _, v := range in.Policies {
 		found := false

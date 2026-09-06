@@ -185,6 +185,7 @@ func networkViews(c *config.Config) {
 	for i := range c.DnsConf {
 		d := &c.DnsConf[i]
 		if len(d.Networks) > 0 {
+			c.CompleteNetworks(d)
 			continue
 		}
 		ids := []string{c.Cluster.LocalID}
@@ -223,5 +224,6 @@ func networkViews(c *config.Config) {
 			}
 			d.Networks = append(d.Networks, n)
 		}
+		c.CompleteNetworks(d)
 	}
 }

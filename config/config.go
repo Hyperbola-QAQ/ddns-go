@@ -498,6 +498,7 @@ func (conf *DnsConfig) GetHTTPClient() *http.Client {
 
 // Return independent snapshots to keep background updates and Web edits race-free.
 func cloneConfig(c Config) Config {
+	c.Cluster.JoinTargets = append([]string(nil), c.Cluster.JoinTargets...)
 	c.Cluster.Nodes = append([]ClusterNode(nil), c.Cluster.Nodes...)
 	c.DnsConf = append([]DnsConfig(nil), c.DnsConf...)
 	for i := range c.DnsConf {

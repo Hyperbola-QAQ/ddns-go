@@ -155,8 +155,8 @@
 <label><input type="checkbox" id="suffixEnabled"> 是否启用</label>
 <div id="suffixBody"><label for="suffixIPs">IP</label><textarea class="form-control" id="suffixIPs" rows="3" placeholder="::1000&#10;::1001"></textarea><small class="form-text text-muted">每行一个 IPv6 后缀，与下方 Domains 逐行对应；使用当前配置的 IPv6 前缀生成地址。单段最多四位十六进制数。</small><label for="suffixDomains" class="mt-3">Domains</label><textarea class="form-control" id="suffixDomains" rows="3" placeholder="host1.example.com&#10;host2.example.com"></textarea><small class="form-text text-muted">每行一个域名，与上方后缀一一对应；与各节点的 Domains 独立配置，不能重复。</small></div>
 </div></div></section>
-<div class="form-group"><label for="addNetworkNode">添加节点网络配置</label><select id="addNetworkNode" class="form-control"></select><button type="button" id="addNetwork" class="btn btn-secondary btn-sm mt-2">添加节点</button><small class="form-text text-muted">节点的地址与令牌在“集群管理”维护；此处的网络设置及账号密码会同步到全部节点。多节点配置必须属于同一 IPv6 前缀变化域。</small></div>
-<template id="networkTemplate"><section class="node-network"><div class="d-flex justify-content-between align-items-center my-3"><h5 class="node-name"></h5><button type="button" class="remove-network btn btn-outline-danger btn-sm">移除此节点</button></div>
+<p class="text-muted">集群节点自动显示在每个配置中，按需启用 IPv4 或 IPv6。节点地址与令牌在“集群管理”维护。</p>
+<template id="networkTemplate"><section class="node-network">
           <div class="portlet">
             <h5 class="portlet__head">IPv4</h5>
             <div class="portlet__body">

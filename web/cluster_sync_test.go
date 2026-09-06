@@ -226,3 +226,51 @@ func TestFirstJoinRegistersSenderAndSynchronizesConfig(t *testing.T) {
 		t.Fatal("join did not preserve identity and adopt source")
 	}
 }
+
+func TestJoinMergesClustersAndKeepsIndependentConfigurations(t *testing.T) {
+	a := config.Config{Cluster: config.ClusterSettings{LocalID: "a", Nodes: []config.ClusterNode{{ID: "a", URL: "http://a"}, {ID: "c", URL: "http://c"}}}, DnsConf: []config.DnsConfig{{ID: "a-config", Name: "same name"}, {ID: "shared", Networks: []config.NodeNetwork{{NodeID: "a", Ipv6: config.IPConfig{Enable: true, Domains: []string{"a.example.com"}}}}}}}
+	b := config.Config{Cluster: config.ClusterSettings{LocalID: "b", Nodes: []config.ClusterNode{{ID: "b", URL: "http://b"}, {ID: "d", URL: "http://d"}}}, DnsConf: []config.DnsConfig{{ID: "b-config", Name: "same name"}, {ID: "shared", Networks: []config.NodeNetwork{{NodeID: "b", Ipv6: config.IPConfig{Enable: true, Domains: []string{"b.example.com"}}}}}}}
+	a.ClusterDefaults()
+	b.ClusterDefaults()
+	incoming := sharedSnapshot(a)
+	incoming.Nodes = append(incoming.Nodes, config.ClusterNode{ID: "b", URL: "http://b"})
+	// Automatic forms may already contain an empty slot for the receiving node.
+	incoming.Configs[1].Networks = append(incoming.Configs[1].Networks, config.NodeNetwork{NodeID: "b"})
+	merged := joiningSnapshot(b, incoming, "a")
+	if len(merged.Nodes) != 4 || len(merged.Configs) != 3 {
+		t.Fatalf("lost nodes or configurations: %d / %d", len(merged.Nodes), len(merged.Configs))
+	}
+	var shared config.DnsConfig
+	for _, d := range merged.Configs {
+		if d.ID == "shared" {
+			shared = d
+		}
+	}
+	for _, id := range []string{"a", "b"} {
+		n, ok := shared.Network(id)
+		if !ok || !n.Ipv6.Enable {
+			t.Fatalf("lost %s network", id)
+		}
+	}
+	if !merged.Version.Newer(incoming.Version) {
+		t.Fatal("merge would not propagate to initiator")
+	}
+}
+
+func TestNetworkFormsIncludeAllNodesDisabledByDefault(t *testing.T) {
+	c := setupCluster(t)
+	c.DnsConf = []config.DnsConfig{{ID: "test", Networks: []config.NodeNetwork{{NodeID: "self", Ipv6: config.IPConfig{Enable: true, Domains: []string{"self.example.com"}}}}}}
+	networkViews(&c)
+	d := c.DnsConf[0]
+	if len(d.Networks) != 2 {
+		t.Fatal("missing automatic node form")
+	}
+	peer, ok := d.Network("peer")
+	if !ok || peer.Ipv4.Enable || peer.Ipv6.Enable || len(peer.Ipv6.Domains) != 0 {
+		t.Fatal("new node unexpectedly enabled")
+	}
+	self, _ := d.Network("self")
+	if !self.Ipv6.Enable {
+		t.Fatal("existing settings lost")
+	}
+}

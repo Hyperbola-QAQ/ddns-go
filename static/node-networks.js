@@ -30,6 +30,12 @@ function renderNodeNetworks(conf) {
     input.onchange=()=>conf.Cluster[key]=input.type==='checkbox'?input.checked:Number(input.value);
   }
   if (!conf.Networks?.length) conf.Networks = [legacyNetwork(conf, localNodeID)];
+  conf.Networks = conf.Networks.filter(n=>clusterNodes.some(node=>node.ID===n.NodeID));
+  for (const node of clusterNodes) if (!conf.Networks.some(n=>n.NodeID===node.ID)) {
+    const n=legacyNetwork(defaultDnsConf,node.ID);
+    n.Ipv4.Enable=false;n.Ipv6.Enable=false;n.Ipv4.Domains=[];n.Ipv6.Domains=[];conf.Networks.push(n);
+  }
+  conf.Cluster.NodeIDs=conf.Networks.map(n=>n.NodeID).join(',');
   conf.IPv6Suffix ||= {Enable:false, IPs:'', Domains:[]};
   const suffixEnabled = document.getElementById('suffixEnabled'), suffixIPs = document.getElementById('suffixIPs');
   const suffixDomains=document.getElementById('suffixDomains');
@@ -46,8 +52,6 @@ function renderNodeNetworks(conf) {
       const card=Array.from(source.querySelectorAll('.portlet')).find(el=>el.querySelector('h5')?.textContent===family.replace('Ipv','IPv'));
       const values=network[family] ||= {};
       const title=card.querySelector('h5');title.textContent=(clusterNodes.find(n=>n.ID===network.NodeID)?.Name||network.NodeID)+' ('+network.NodeID+')';
-      const remove=document.createElement('button');remove.type='button';remove.className='btn btn-outline-danger btn-sm float-right';remove.textContent='移除此节点';
-      remove.onclick=()=>{conf.Networks.splice(index,1);conf.Cluster.NodeIDs=conf.Networks.map(n=>n.NodeID).join(',');renderNodeNetworks(conf);};title.append(remove);
       const prefix='node-'+index+'-';
       card.querySelectorAll('[id]').forEach(el=>el.id=prefix+el.id);
       card.querySelectorAll('[for]').forEach(el=>el.htmlFor=prefix+el.htmlFor);
@@ -99,12 +103,4 @@ function renderNodeNetworks(conf) {
       refresh.onclick=()=>populate(true);convertDom(card);container.append(card);visibility();populate();
     });
   }
-  const select=document.getElementById('addNetworkNode');select.replaceChildren();
-  for(const n of clusterNodes)if(!conf.Networks.some(item=>item.NodeID===n.ID)){const option=document.createElement('option');option.value=n.ID;option.textContent=n.Name+' ('+n.ID+')';select.append(option);}
-  document.getElementById('addNetwork').disabled=select.options.length===0;
-  document.getElementById('addNetwork').onclick=()=>{
-    if(!select.value)return;const n=legacyNetwork(defaultDnsConf,select.value);n.Ipv4.Domains=[];n.Ipv6.Domains=[];
-    conf.Networks.push(n);conf.Cluster.NodeIDs=conf.Networks.map(item=>item.NodeID).join(',');
-    renderNodeNetworks(conf);
-  };
 }

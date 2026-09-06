@@ -43,10 +43,11 @@ type ClusterNode struct {
 }
 
 type ClusterSettings struct {
-	LocalID string `yaml:"nodeid"` // generated identity; old localid is intentionally unsupported
-	Token   string // inbound peer token, independent of the Web login
-	Nodes   []ClusterNode
-	Version SyncVersion
+	JoinTargets []string `json:"-" yaml:"jointargets,omitempty"` // local, retryable enrollment requests
+	LocalID     string   `yaml:"nodeid"`                         // generated identity; old localid is intentionally unsupported
+	Token       string   // inbound peer token, independent of the Web login
+	Nodes       []ClusterNode
+	Version     SyncVersion
 }
 
 // SyncVersion is a logical clock; concurrent versions use node ID as a deterministic tie-break.
@@ -112,7 +113,43 @@ func (c *Config) ClusterDefaults() {
 		}
 		c.DnsConf[i].Cluster.Defaults(c.Cluster.LocalID)
 		c.DnsConf[i].Cluster.Group = c.DnsConf[i].ID
+		if len(c.DnsConf[i].Networks) > 0 {
+			c.CompleteNetworks(&c.DnsConf[i])
+		}
 	}
+}
+
+// Every configured cluster node has a visible network form; new nodes start disabled.
+func (c Config) CompleteNetworks(d *DnsConfig) {
+	ids := []string{c.Cluster.LocalID}
+	for _, n := range c.Cluster.Nodes {
+		if n.ID != c.Cluster.LocalID {
+			ids = append(ids, n.ID)
+		}
+	}
+	known := map[string]bool{}
+	for _, id := range ids {
+		known[id] = true
+	}
+	networks := make([]NodeNetwork, 0, len(ids))
+	seen := map[string]bool{}
+	for _, n := range d.Networks {
+		if known[n.NodeID] {
+			networks = append(networks, n)
+			seen[n.NodeID] = true
+		}
+	}
+	for _, id := range ids {
+		if !seen[id] {
+			networks = append(networks, NodeNetwork{NodeID: id, Ipv4: IPConfig{GetType: "url"}, Ipv6: IPConfig{GetType: "netInterface"}})
+		}
+	}
+	d.Networks = networks
+	ids = ids[:0]
+	for _, n := range networks {
+		ids = append(ids, n.NodeID)
+	}
+	d.Cluster.NodeIDs = strings.Join(ids, ",")
 }
 
 func (c Config) Node(id string) (ClusterNode, bool) {

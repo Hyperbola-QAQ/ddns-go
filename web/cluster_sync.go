@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ type SharedSnapshot struct {
 }
 
 func sharedSnapshot(c config.Config) SharedSnapshot {
+	networkViews(&c)
 	s := SharedSnapshot{Version: c.Cluster.Version, Actor: c.Cluster.Version.Actor, Nodes: cluster.Members(c), Configs: c.DnsConf, User: c.User, Webhook: c.Webhook, Audit: c.Audit, NotAllowWanAccess: c.NotAllowWanAccess, Lang: c.Lang}
 	for i := range s.Nodes {
 		if s.Nodes[i].ID == c.Cluster.LocalID {
@@ -37,6 +39,59 @@ func sharedSnapshot(c config.Config) SharedSnapshot {
 		}
 	}
 	return s
+}
+
+// Enrollment unions independent configurations. Stable IDs identify shared
+// configurations; the initiator supplies shared fields, and peer-only bindings survive.
+func joiningSnapshot(c config.Config, incoming SharedSnapshot, sender string) SharedSnapshot {
+	local := sharedSnapshot(c)
+	result := incoming
+	result.Nodes = append([]config.ClusterNode(nil), incoming.Nodes...)
+	seenNodes := map[string]bool{}
+	for _, n := range result.Nodes {
+		seenNodes[n.ID] = true
+	}
+	for _, n := range local.Nodes {
+		if !seenNodes[n.ID] {
+			result.Nodes = append(result.Nodes, n)
+		}
+	}
+	result.Configs = append([]config.DnsConfig(nil), incoming.Configs...)
+	indexes := map[string]int{}
+	for i, d := range result.Configs {
+		indexes[d.ID] = i
+	}
+	for _, d := range local.Configs {
+		if i, ok := indexes[d.ID]; ok {
+			current := &result.Configs[i]
+			current.Networks = append([]config.NodeNetwork(nil), current.Networks...)
+			seen := map[string]int{}
+			for i, n := range current.Networks {
+				seen[n.NodeID] = i
+			}
+			for _, n := range d.Networks {
+				if i, ok := seen[n.NodeID]; !ok {
+					current.Networks = append(current.Networks, n)
+				} else if emptyNetwork(current.Networks[i]) {
+					current.Networks[i] = n
+				}
+			}
+		} else {
+			result.Configs = append(result.Configs, d)
+		}
+	}
+	result.Version.Counter = max(incoming.Version.Counter, local.Version.Counter) + 1
+	result.Version.Node = sender
+	return result
+}
+
+func emptyNetwork(n config.NodeNetwork) bool {
+	for _, ip := range []config.IPConfig{n.Ipv4, n.Ipv6} {
+		if ip.Enable || len(ip.Domains) > 0 || ip.URL != "" || ip.Cmd != "" || ip.NetInterface != "" || ip.Ipv6Reg != "" {
+			return false
+		}
+	}
+	return n.Suffixes == ""
 }
 func bumpClusterVersion(c *config.Config) {
 	c.Cluster.Version.Counter++
@@ -147,8 +202,8 @@ func ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	defer config.EditMu.Unlock()
 	c, _ := config.GetConfigCached()
 	sender := r.Header.Get("X-DDNS-Node")
-	if _, known := c.Node(sender); known || sender == "" || s.Version.Node != sender {
-		http.Error(w, "节点已加入或发送节点无效", 409)
+	if sender == "" || sender == c.Cluster.LocalID {
+		http.Error(w, "发送节点无效", 409)
 		return
 	}
 	found := false
@@ -161,16 +216,13 @@ func ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "请填写发起节点的访问地址和令牌", 400)
 		return
 	}
-	// Joining explicitly adopts the initiating node's configuration, even if this
-	// standalone receiver previously performed more local edits.
-	if s.Version.Counter <= c.Cluster.Version.Counter {
-		s.Version.Counter = c.Cluster.Version.Counter + 1
-	}
+	s = joiningSnapshot(c, s, sender)
 	if err := acceptSnapshotLocked(s, sender); err != nil {
 		http.Error(w, err.Error(), 409)
 		return
 	}
 	next, _ := config.GetConfigCached()
+	queueClusterSync()
 	jsonResponse(w, sharedSnapshot(next))
 }
 func ClusterSync(w http.ResponseWriter, r *http.Request) {
@@ -255,8 +307,13 @@ func syncClusterOnce() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		var remote SharedSnapshot
-		err := cluster.Call(ctx, n, c.Cluster.LocalID, "GET", "/cluster/sync", nil, &remote)
-		if err != nil {
+		joining := slices.Contains(c.Cluster.JoinTargets, n.ID)
+		var err error
+		if !joining {
+			err = cluster.Call(ctx, n, c.Cluster.LocalID, "GET", "/cluster/sync", nil, &remote)
+		}
+		var responseError *cluster.HTTPError
+		if joining || (errors.As(err, &responseError) && responseError.Status == http.StatusForbidden) {
 			// A knows B after saving, but B may not know A yet.
 			err = cluster.Call(ctx, n, c.Cluster.LocalID, "POST", "/cluster/join", sharedSnapshot(c), &remote)
 		}
@@ -264,6 +321,20 @@ func syncClusterOnce() {
 			err = acceptSnapshot(remote, n.ID)
 			if err == nil {
 				c, _ = config.GetConfigCached()
+			}
+		}
+		if err == nil && joining {
+			config.EditMu.Lock()
+			latest, e := config.GetConfigCached()
+			if e == nil {
+				latest.Cluster.JoinTargets = slices.DeleteFunc(latest.Cluster.JoinTargets, func(id string) bool { return id == n.ID })
+				e = latest.SaveConfig()
+			}
+			config.EditMu.Unlock()
+			if e != nil {
+				err = e
+			} else {
+				c = latest
 			}
 		}
 		if err == nil && c.Cluster.Version.Newer(remote.Version) {
