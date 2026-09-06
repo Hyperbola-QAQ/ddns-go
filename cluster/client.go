@@ -19,11 +19,12 @@ import (
 var Client = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 type Job struct {
-	NodeID    string
-	IPv4      string
-	IPv6      string
-	Batch     bool
-	IPv6Index *int `json:",omitempty"`
+	CustomSuffix bool
+	NodeID       string
+	IPv4         string
+	IPv6         string
+	Batch        bool
+	IPv6Index    *int `json:",omitempty"`
 }
 type UpdateRequest struct {
 	LayoutHash string

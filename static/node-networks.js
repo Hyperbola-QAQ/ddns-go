@@ -30,11 +30,11 @@ function renderNodeNetworks(conf) {
     input.onchange=()=>conf.Cluster[key]=input.type==='checkbox'?input.checked:Number(input.value);
   }
   if (!conf.Networks?.length) conf.Networks = [legacyNetwork(conf, localNodeID)];
-  if (!conf.IPv6Suffix) {
-    const lines = conf.Networks.flatMap(n => (n.Ipv6.Domains||[]).map((_,i)=>(n.Suffixes||'').split(/\r?\n/)[i]||''));
-    conf.IPv6Suffix = {Enable: lines.some(s=>s.trim()), IPs: lines.join('\n')};
-  }
+  conf.IPv6Suffix ||= {Enable:false, IPs:'', Domains:[]};
   const suffixEnabled = document.getElementById('suffixEnabled'), suffixIPs = document.getElementById('suffixIPs');
+  const suffixDomains=document.getElementById('suffixDomains');
+  suffixDomains.value=(conf.IPv6Suffix.Domains||[]).join('\n');
+  suffixDomains.oninput=()=>conf.IPv6Suffix.Domains=suffixDomains.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
   suffixEnabled.checked = conf.IPv6Suffix.Enable;suffixIPs.value = conf.IPv6Suffix.IPs;
   function suffixVisibility(){document.getElementById('suffixBody').hidden=!conf.IPv6Suffix.Enable;}
   suffixEnabled.onchange=()=>{conf.IPv6Suffix.Enable=suffixEnabled.checked;suffixVisibility();};

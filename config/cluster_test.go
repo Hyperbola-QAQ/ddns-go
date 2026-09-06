@@ -87,7 +87,7 @@ func TestNodeNetworkSuffixYAMLRoundTrip(t *testing.T) {
 }
 
 func TestGlobalSuffixYAMLAndValidation(t *testing.T) {
-	c := Config{Cluster: ClusterSettings{LocalID: "a"}, DnsConf: []DnsConfig{{ID: "g", IPv6Suffix: &SuffixConfig{Enable: true, IPs: "\n::1000"}, Networks: []NodeNetwork{{NodeID: "a", Ipv6: IPConfig{Domains: []string{"a.example.com", "b.example.com"}}}}}}}
+	c := Config{Cluster: ClusterSettings{LocalID: "a"}, DnsConf: []DnsConfig{{ID: "g", IPv6Suffix: &SuffixConfig{Enable: true, IPs: "::1000", Domains: []string{"custom.example.com"}}, Networks: []NodeNetwork{{NodeID: "a", Ipv6: IPConfig{Domains: []string{"a.example.com", "b.example.com"}}}}}}}
 	c.ClusterDefaults()
 	if err := c.ValidateCluster(); err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestGlobalSuffixYAMLAndValidation(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved.DnsConf[0].IPv6Suffix.IPs != "\n::1000" {
+	if saved.DnsConf[0].IPv6Suffix.IPs != "::1000" {
 		t.Fatal("global suffix line order lost")
 	}
 	c.DnsConf[0].IPv6Suffix.IPs = "::1\n::2\n::3"
@@ -156,5 +156,30 @@ func TestOldNodeIdentityIsNotMigrated(t *testing.T) {
 	restored.ClusterDefaults()
 	if restored.Cluster.LocalID != c.Cluster.LocalID {
 		t.Fatal("generated identity did not persist")
+	}
+}
+
+func TestCustomSuffixDomainValidationAndIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		domains []string
+	}{
+		{"missing", nil},
+		{"count", []string{"one.example.com", "two.example.com"}},
+		{"node conflict", []string{"node.example.com"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{Cluster: ClusterSettings{LocalID: "self"}, DnsConf: []DnsConfig{{ID: "test", Networks: []NodeNetwork{{NodeID: "self", Ipv6: IPConfig{Domains: []string{"node.example.com"}}}}, IPv6Suffix: &SuffixConfig{Enable: true, IPs: "::1000", Domains: tc.domains}}}}
+			c.ClusterDefaults()
+			if err := c.ValidateCluster(); err == nil {
+				t.Fatal("invalid custom domains accepted")
+			}
+		})
+	}
+	c := Config{DnsConf: []DnsConfig{{IPv6Suffix: &SuffixConfig{Domains: []string{"one.example.com"}}}}}
+	copy := cloneConfig(c)
+	copy.DnsConf[0].IPv6Suffix.Domains[0] = "changed.example.com"
+	if c.DnsConf[0].IPv6Suffix.Domains[0] != "one.example.com" {
+		t.Fatal("snapshot shares custom domains")
 	}
 }

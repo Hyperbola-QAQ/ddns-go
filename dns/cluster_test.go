@@ -230,29 +230,38 @@ func TestBlankSuffixKeepsFirstDomainHostBits(t *testing.T) {
 	}
 }
 
-func TestOneGlobalIPv6SuffixList(t *testing.T) {
-	d := config.DnsConfig{IPv6Suffix: &config.SuffixConfig{Enable: true, IPs: "::1000\n\n::2000"}, Networks: []config.NodeNetwork{
-		{NodeID: "a", Ipv6: config.IPConfig{Enable: true, Domains: []string{"a.example.com", "a2.example.com"}}, Suffixes: "::dead"},
-		{NodeID: "b", Ipv6: config.IPConfig{Enable: true, Domains: []string{"b.example.com", "b2.example.com"}}},
-	}}
-	for _, tt := range []struct {
-		id   string
-		want []string
-	}{{"a", []string{"2001:db8::1000", "2001:db8::12"}}, {"b", []string{"2001:db8::2000", "2001:db8::12"}}} {
-		n, _ := d.NetworkWithSuffix(tt.id)
-		jobs, err := networkJobs(n, config.ResolvedIP{IPv6: "2001:db8:1::12"}, "2001:db8::/64", true)
-		if err != nil || len(jobs) != 2 {
-			t.Fatal(err)
-		}
-		for i := range jobs {
-			if jobs[i].IPv6 != tt.want[i] {
-				t.Fatal(jobs)
-			}
+func TestIndependentCustomSuffixDomains(t *testing.T) {
+	t.Setenv(util.ConfigFilePathENV, filepath.Join(t.TempDir(), "config.yaml"))
+	records := map[string]string{}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		records[r.URL.Query().Get("domain")] = r.URL.Query().Get("ip")
+		w.Write([]byte("ok"))
+	}))
+	defer provider.Close()
+	c := config.Config{Cluster: config.ClusterSettings{LocalID: "self"}}
+	d := config.DnsConfig{ID: "independent", DNS: config.DNS{Name: "callback", ID: provider.URL + "?domain=#{domain}&ip=#{ip}"}, Cluster: config.ClusterPolicy{Enabled: true, NodeIDs: "self"}, Networks: []config.NodeNetwork{{NodeID: "self", Ipv6: config.IPConfig{Enable: true, GetType: "cmd", Cmd: "printf '2001:db8:1::12'", Domains: []string{"node.example.com"}}}}, IPv6Suffix: &config.SuffixConfig{Enable: true, IPs: "::1000\n::1001", Domains: []string{"custom1.example.com", "custom2.example.com"}}}
+	c.DnsConf = []config.DnsConfig{d}
+	c.ClusterDefaults()
+	d = c.DnsConf[0]
+	if err := runCluster(c, d); err != nil {
+		t.Fatal(err)
+	}
+	for domain, ip := range map[string]string{"node.example.com": "2001:db8:1::12", "custom1.example.com": "2001:db8:1::1000", "custom2.example.com": "2001:db8:1::1001"} {
+		if records[domain] != ip {
+			t.Fatalf("%s: got %q want %q", domain, records[domain], ip)
 		}
 	}
+	d.Networks[0].Ipv6.Cmd = "printf '2001:db8:2::12'"
+	c.DnsConf[0] = d
+	if err := runCluster(c, d); err != nil {
+		t.Fatal(err)
+	}
+	if records["custom1.example.com"] != "2001:db8:2::1000" {
+		t.Fatal("custom domain did not follow prefix change")
+	}
 	d.IPv6Suffix.Enable = false
-	n, _ := d.NetworkWithSuffix("a")
-	if n.Suffixes != "" {
-		t.Fatal("disabled global setting used legacy per-node suffix")
+	jobs, err := customSuffixJobs(c, d, "2001:db8:2::/64", false)
+	if err != nil || len(jobs) != 0 {
+		t.Fatal("disabled custom suffix generated jobs")
 	}
 }

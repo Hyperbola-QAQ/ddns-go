@@ -94,21 +94,23 @@ func (d DnsConfig) ValidateNetworks(c Config) error {
 		}
 	}
 	if d.IPv6Suffix != nil && d.IPv6Suffix.Enable {
-		count := 0
-		for _, n := range d.Networks {
-			count += len(n.Ipv6.Domains)
+		lines := strings.Split(strings.TrimSpace(d.IPv6Suffix.IPs), "\n")
+		if len(d.IPv6Suffix.Domains) == 0 || len(lines) != len(d.IPv6Suffix.Domains) {
+			return fmt.Errorf("自定义 IPv6 后缀和 Domains 必须逐行对应，且不能为空")
 		}
-		lines := strings.Split(strings.ReplaceAll(d.IPv6Suffix.IPs, "\r\n", "\n"), "\n")
-		for i, v := range lines {
-			if strings.TrimSpace(v) == "" {
-				continue
-			}
-			if i >= count {
-				return fmt.Errorf("自定义 IPv6 后缀行数超过此配置的 IPv6 域名数")
-			}
-			if err := validateSuffix(strings.TrimSpace(v), d.Cluster.PrefixLength); err != nil {
+		for i, domain := range d.IPv6Suffix.Domains {
+			if err := validateSuffix(strings.TrimSpace(lines[i]), d.Cluster.PrefixLength); err != nil {
 				return err
 			}
+			parsed := checkParseDomains([]string{domain})
+			if len(parsed) != 1 {
+				return fmt.Errorf("自定义后缀域名无效")
+			}
+			key := "1" + strings.ToLower(strings.TrimSuffix(parsed[0].ToASCII(), "."))
+			if domains[key] {
+				return fmt.Errorf("自定义后缀域名重复或与节点 IPv6 域名冲突: %s", domain)
+			}
+			domains[key] = true
 		}
 	}
 	if d.Cluster.Enabled && len(d.Networks) > 0 {
@@ -131,38 +133,24 @@ func (n NodeNetwork) MarshalYAML() (any, error) {
 	}{n.NodeID, n.Ipv4, n.Ipv6, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: n.Suffixes, Style: yaml.DoubleQuotedStyle}}, nil
 }
 
-// IPv6 has one optional suffix list per DNS configuration, in domain display order.
+// Each DNS configuration has one optional suffix list with its own domain bindings.
 type SuffixConfig struct {
-	Enable bool
-	IPs    string
+	Enable  bool
+	IPs     string
+	Domains []string
 }
 
 func (s SuffixConfig) MarshalYAML() (any, error) {
 	return struct {
-		Enable bool
-		IPs    *yaml.Node
-	}{s.Enable, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s.IPs, Style: yaml.DoubleQuotedStyle}}, nil
+		Enable  bool
+		IPs     *yaml.Node
+		Domains []string
+	}{s.Enable, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s.IPs, Style: yaml.DoubleQuotedStyle}, s.Domains}, nil
 }
 func (d DnsConfig) NetworkWithSuffix(id string) (NodeNetwork, bool) {
-	offset := 0
-	for _, n := range d.Networks {
-		if n.NodeID == id {
-			if d.IPv6Suffix != nil {
-				n.Suffixes = ""
-				if d.IPv6Suffix.Enable {
-					lines := strings.Split(strings.ReplaceAll(d.IPv6Suffix.IPs, "\r\n", "\n"), "\n")
-					values := make([]string, len(n.Ipv6.Domains))
-					for i := range values {
-						if offset+i < len(lines) {
-							values[i] = lines[offset+i]
-						}
-					}
-					n.Suffixes = strings.Join(values, "\n")
-				}
-			}
-			return n, true
-		}
-		offset += len(n.Ipv6.Domains)
+	n, ok := d.Network(id)
+	if d.IPv6Suffix != nil {
+		n.Suffixes = ""
 	}
-	return NodeNetwork{}, false
+	return n, ok
 }
