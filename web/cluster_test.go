@@ -239,3 +239,20 @@ func TestAddressAndTokenDiscoverNode(t *testing.T) {
 		t.Fatal("saved token missing from response")
 	}
 }
+
+func TestClusterRejectsManualIdentityChange(t *testing.T) {
+	c := setupCluster(t)
+	c.Cluster.LocalID = "manual-replacement"
+	body, _ := json.Marshal(map[string]any{"Cluster": c.Cluster})
+	r := httptest.NewRequest("POST", "/cluster/settings", bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	ClusterSettings(w, r)
+	if w.Code != 400 {
+		t.Fatal("manual identity change accepted")
+	}
+	got, _ := config.GetConfigCached()
+	if got.Cluster.LocalID != "self" {
+		t.Fatal("identity changed")
+	}
+}

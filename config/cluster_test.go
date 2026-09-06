@@ -132,3 +132,29 @@ func TestGeneratedIdentityAndConfigScope(t *testing.T) {
 		t.Fatal("hostname missing")
 	}
 }
+
+func TestOldNodeIdentityIsNotMigrated(t *testing.T) {
+	var c Config
+	if err := yaml.Unmarshal([]byte("cluster:\n  localid: old-manual-id\ndnsconf:\n  - id: config-one\n    cluster:\n      group: old-group\n      nodeids: old-manual-id\n"), &c); err != nil {
+		t.Fatal(err)
+	}
+	c.ClusterDefaults()
+	if len(c.Cluster.LocalID) != 12 || c.Cluster.LocalID == "old-manual-id" {
+		t.Fatal("old identity retained")
+	}
+	if c.DnsConf[0].Cluster.Group != "config-one" || c.DnsConf[0].Cluster.NodeIDs != "old-manual-id" {
+		t.Fatal("legacy references migrated")
+	}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Config
+	if err = yaml.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	restored.ClusterDefaults()
+	if restored.Cluster.LocalID != c.Cluster.LocalID {
+		t.Fatal("generated identity did not persist")
+	}
+}

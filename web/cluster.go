@@ -179,8 +179,8 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	c, _ := config.GetConfigCached()
 	old := c
-	if in.Cluster.LocalID == "" {
-		http.Error(w, "本机 ID 不能为空", 400)
+	if in.Cluster.LocalID != c.Cluster.LocalID {
+		http.Error(w, "本机 ID 由系统自动生成，不允许修改", 400)
 		return
 	}
 	if in.Cluster.Token == "" {

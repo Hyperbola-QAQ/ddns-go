@@ -21,8 +21,7 @@ func RegisterClusterAlgorithm(name string) { clusterAlgorithms.Store(name, true)
 // ClusterPolicy is opt-in; an absent policy preserves the single-node updater.
 type ClusterPolicy struct {
 	Enabled         bool
-	Group           string `yaml:"-" json:"-"`               // derived from DnsConfig.ID
-	LegacyGroup     string `yaml:"group,omitempty" json:"-"` // old state-file key
+	Group           string `yaml:"-" json:"-"` // derived from DnsConfig.ID
 	NodeIDs         string // comma-separated stable IDs, not display names
 	Coordinator     string `yaml:"coordinator,omitempty" json:"-"` // read old files; no scheduling authority
 	Source          string // node, auto, prefix
@@ -44,7 +43,7 @@ type ClusterNode struct {
 }
 
 type ClusterSettings struct {
-	LocalID string
+	LocalID string `yaml:"nodeid"` // generated identity; old localid is intentionally unsupported
 	Token   string // inbound peer token, independent of the Web login
 	Nodes   []ClusterNode
 	Version SyncVersion

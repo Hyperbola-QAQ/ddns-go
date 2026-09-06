@@ -40,9 +40,6 @@ func runCluster(c config.Config, d config.DnsConfig) error {
 		return err
 	}
 	state := states[p.Group]
-	if state == nil && p.LegacyGroup != "" {
-		state = states[p.LegacyGroup]
-	}
 	if state == nil {
 		state = &cluster.State{}
 		states[p.Group] = state
