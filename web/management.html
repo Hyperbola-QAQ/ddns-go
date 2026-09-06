@@ -6,45 +6,37 @@
   <link rel="stylesheet" href="./static/bootstrap.min.css"><link class="theme" rel="stylesheet" href="./static/common.css">
   <link rel="stylesheet" href="./static/theme-button.css">
   <script src="./static/constant.js"></script><script src="./static/utils.js"></script><script src="./static/i18n.js"></script>
-  <style>main { color: var(--text-color); } .table { color: inherit; table-layout: fixed; } pre { color: inherit; white-space: pre-wrap; word-break: break-word; } .form-group > label { width: 100%; }</style>
+  <style>.management .navbar { position: relative !important; width: 100%; } .management main { padding-top: 1rem; } main { color: var(--text-color); } .table { color: inherit; table-layout: fixed; } pre { color: inherit; white-space: pre-wrap; word-break: break-word; } .form-group > label { width: 100%; }</style>
 </head>
-<body>
+<body class="management">
 <header class="navbar navbar-dark bg-dark shadow-sm"><div class="container d-flex flex-wrap align-items-center">
   <a class="navbar-brand" href="./">DDNS-GO</a>
   <nav><a class="btn btn-info btn-sm" href="./">配置管理</a> <a class="btn btn-info btn-sm" href="./cluster">集群管理</a> <a class="btn btn-info btn-sm" href="./audit">审计日志</a> <a class="btn btn-secondary btn-sm" href="./logout">退出</a></nav><span class="theme-button gg-dark-mode" id="themeButton" title="切换主题"></span>
 </div></header>
-<main class="container py-3">
+<main class="container pb-3">
 <p id="message" role="status" aria-live="polite"></p>
 {{if eq . "cluster"}}
 <section class="portlet"><h5 class="portlet__head">集群管理</h5><div class="portlet__body">
 <p>每个节点独立运行，先触发的节点在本机更新；同时触发时通过短暂随机竞争选出一个执行。保存后立即同步共享配置，离线节点恢复后自动补齐。各节点可独立登录，登录不依赖其他节点在线。</p>
-<div class="form-group"><label for="localID">本机节点 ID</label><input class="form-control" id="localID" value="local"><small class="text-muted">全组唯一且稳定，例如 router-a。首次配置时设置，启用集群后不要随意修改。</small></div>
-<div class="form-group"><label for="token">本机访问令牌</label><input class="form-control" id="token" type="text" autocomplete="off"><small class="text-muted">至少 32 字符；留空保留原值。将同一令牌填到其他节点对此节点的访问令牌中。</small> <button type="button" id="generate" class="btn btn-secondary btn-sm">生成令牌</button></div>
+<div class="form-group"><label for="localID">本机节点 ID（自动生成）</label><input class="form-control" id="localID" readonly></div>
+<div class="form-group"><label for="localName">本机名称</label><input class="form-control" id="localName" readonly></div>
+<div class="form-group"><label for="localURL">本机访问地址</label><input class="form-control" id="localURL"><small class="text-muted">自动填入当前访问地址；请确保其他节点可通过此地址访问本机。</small></div>
+<div class="form-group"><label for="token">本机访问令牌</label><input class="form-control" id="token" type="text" autocomplete="off"><small class="text-muted">至少 32 字符；留空保留原值。将同一令牌填到其他节点对此节点的访问令牌中。</small> <button type="button" id="generate" disabled class="btn btn-secondary btn-sm">生成令牌</button></div>
 <pre id="tokenPlain" class="border rounded p-2" aria-label="本机令牌明文"></pre>
 <div class="form-group"><label for="driver">审计数据库驱动</label><input class="form-control" id="driver" placeholder="sqlite"><small class="text-muted">内置 sqlite；其他驱动需注册存储适配器。数据库设置在重启后生效。</small></div>
 <div class="form-group"><label for="dsn">审计数据库路径 / DSN</label><input class="form-control" id="dsn" placeholder="默认：配置文件路径.audit.db"></div>
 </div></section>
 <div class="d-flex justify-content-between my-3"><h5>关联节点</h5><button id="add" class="btn btn-secondary">添加节点</button></div>
 <div id="nodes"></div>
-<h5 class="my-3">配置组与前缀防抖</h5><div id="policies"></div>
-<button id="save" class="btn btn-primary">保存集群设置</button>
+
+<button id="save" disabled class="btn btn-primary">保存集群设置</button>
 <p id="saveMessage" role="status" aria-live="polite" class="mt-2"></p>
-<p class="text-muted mt-2">本机也可添加到列表以编辑名称和所属组。多节点时请填写本机可被其他节点访问的地址。各节点的 IP 获取方式和域名在配置管理页面按节点编辑；IPv6 自定义后缀在该配置的 IPv6 区域统一设置。</p>
+<p class="text-muted mt-2">添加其他节点只需访问地址和令牌，名称与 ID 自动识别。各节点的 IP 获取方式和域名在配置管理页面按节点编辑；IPv6 自定义后缀在该配置的 IPv6 区域统一设置。</p>
 <template id="nodeTemplate"><section class="portlet"><div class="portlet__body">
-<div class="row">
-<div class="form-group col-md-4"><label>节点 ID<input data-field="ID" class="form-control" required></label></div>
-<div class="form-group col-md-4"><label>节点名称<input data-field="Name" class="form-control"></label></div>
-<div class="form-group col-md-4"><label>配置组标识<input data-field="Group" class="form-control"></label></div>
-</div>
+<p class="node-identity text-muted">保存后自动识别节点名称和 ID</p>
 <div class="form-group"><label>访问地址<input data-field="URL" class="form-control" placeholder="https://node.example.com"></label></div>
 <div class="form-group"><label>访问此节点的令牌<input data-field="Token" class="form-control" type="text" autocomplete="off" placeholder="留空保留"></label></div>
 <button type="button" class="btn btn-outline-danger remove">删除节点</button>
-</div></section></template>
-<template id="policyTemplate"><section class="portlet"><h5 class="portlet__head policy-name"></h5><div class="portlet__body">
-<div class="form-group"><label><input type="checkbox" data-policy="Enabled"> 启用此配置的集群协作更新</label></div>
-<div class="row"><div class="form-group col-md-6"><label>配置组标识<input class="form-control" data-policy="Group"></label></div><div class="form-group col-md-6"><label>关联节点 ID（逗号分隔）<input class="form-control" data-policy="NodeIDs"></label></div></div>
-<div class="row"><div class="form-group col-md-6"><label>IPv6 前缀长度（默认 64）<input type="number" min="1" max="128" class="form-control" data-policy="PrefixLength"></label></div><div class="form-group col-md-6"><label>前缀冷却时间（秒）<input type="number" min="1" max="3600" class="form-control" data-policy="CooldownSeconds" placeholder="60"></label></div></div>
-<small class="text-muted">同一配置的全部节点必须属于同一 IPv6 前缀变化域，否则可能反复覆盖 DNS；持续不一致时暂停前缀更新。冷却期内忽略延迟出现的旧前缀，连续快速变化时自动延长，最多为设定值的四倍。</small>
 </div></section></template>
 {{else}}
 <section class="portlet"><h5 class="portlet__head">审计日志</h5><div class="portlet__body">
@@ -58,7 +50,7 @@
 <script>
 const message = document.getElementById('message');
 async function api(path, data) {
- const response = await fetch(path, data === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+ const response = await fetch(path, data === undefined ? {cache:'no-store'} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
  if (response.redirected || response.status === 401) { location.href='./login'; throw new Error('请重新登录'); }
  if (!response.ok) throw new Error(await response.text());
  return response.json();
@@ -70,15 +62,11 @@ function showStatus(text, failed=false) {
 }
 function fail(e) { showStatus(e.message, true); }
 if (document.getElementById('nodes')) {
- const policies=document.getElementById('policies');
- function addPolicy(item) {
-  const fragment=document.getElementById('policyTemplate').content.cloneNode(true);const card=fragment.querySelector('section');card.dataset.id=item.ID;card._policy=item.Cluster;
-  card.querySelector('.policy-name').textContent=item.Name;
-  card.querySelectorAll('[data-policy]').forEach(input=>{const value=item.Cluster[input.dataset.policy];if(input.type==='checkbox')input.checked=!!value;else input.value=value??'';});policies.append(fragment);
- }
  const nodes = document.getElementById('nodes');
  function addNode(node={}) {
   const card=document.getElementById('nodeTemplate').content.cloneNode(true);
+  card.querySelector('section').dataset.id=node.ID||''; card.querySelector('section').dataset.name=node.Name||'';
+  if(node.ID)card.querySelector('.node-identity').textContent=(node.Name||node.ID)+' ('+node.ID+')';
   card.querySelectorAll('[data-field]').forEach(input=>input.value=node[input.dataset.field]||'');
   card.querySelector('.remove').onclick=e=>e.target.closest('section').remove(); nodes.append(card);
  }
@@ -104,9 +92,11 @@ if (document.getElementById('nodes')) {
   const button=document.getElementById('save'); button.disabled=true; button.textContent='正在保存…'; clearTimeout(statusTimer);
   showStatus('正在保存集群设置…');
   try {
-   const list=Array.from(nodes.children,card=>Object.fromEntries(Array.from(card.querySelectorAll('[data-field]'),input=>[input.dataset.field,input.value.trim()])));
-   const policyList=Array.from(policies.children,card=>({ID:card.dataset.id,Cluster:{...card._policy,...Object.fromEntries(Array.from(card.querySelectorAll('[data-policy]'),input=>[input.dataset.policy,input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value.trim()]))}}));
-   await api('./cluster/settings',{Policies:policyList,Cluster:{LocalID:document.getElementById('localID').value.trim(),Token:document.getElementById('token').value,Nodes:list},Audit:{Driver:document.getElementById('driver').value.trim(),DSN:document.getElementById('dsn').value.trim()}});
+   const list=Array.from(nodes.children,card=>({ID:card.dataset.id,Name:card.dataset.name,...Object.fromEntries(Array.from(card.querySelectorAll('[data-field]'),input=>[input.dataset.field,input.value.trim()]))}));
+   list.push({ID:document.getElementById('localID').value,Name:document.getElementById('localName').value,URL:document.getElementById('localURL').value.trim(),Token:tokenInput.value});
+   const saved=await api('./cluster/settings',{Cluster:{LocalID:document.getElementById('localID').value,Token:tokenInput.value,Nodes:list},Audit:{Driver:document.getElementById('driver').value.trim(),DSN:document.getElementById('dsn').value.trim()}});
+   if(saved.Cluster) { showToken(saved.Cluster.Token); nodes.replaceChildren(); saved.Cluster.Nodes.filter(n=>n.ID!==saved.Cluster.LocalID).forEach(addNode); }
+
 
    showStatus('本机已保存，正在同步到其他节点；数据库设置重启后生效。');
    statusTimer=setTimeout(checkSync,5000);
@@ -115,10 +105,12 @@ if (document.getElementById('nodes')) {
  };
  api('./cluster/settings').then(data=>{
   showToken(data.Cluster.Token||'');document.getElementById('localID').value=data.Cluster.LocalID;document.getElementById('driver').value=data.Audit.Driver||'sqlite';document.getElementById('dsn').value=data.Audit.DSN||'';
-  (data.Cluster.Nodes||[]).forEach(addNode);
-  if (!(data.Cluster.Nodes||[]).some(n=>n.ID===data.Cluster.LocalID)) addNode({ID:data.Cluster.LocalID,Name:'本机',URL:location.href.split('?')[0].replace(/\/cluster\/?$/, ''),Token:data.Cluster.Token||''});
-  (data.Policies||[]).forEach(addPolicy);
+  const self=(data.Cluster.Nodes||[]).find(n=>n.ID===data.Cluster.LocalID)||{};
+  document.getElementById('localName').value=self.Name||data.Cluster.LocalID;
+  document.getElementById('localURL').value=self.URL||location.href.split('?')[0].replace(/\/cluster\/?$/, '');
+  (data.Cluster.Nodes||[]).filter(n=>n.ID!==data.Cluster.LocalID).forEach(addNode);
   message.textContent=Object.entries(data.SyncErrors||{}).map(([id,error])=>id+"："+error).join("；");
+  document.getElementById('generate').disabled=false;document.getElementById('save').disabled=false;
  }).catch(fail);
 } else {
  let offset=0;

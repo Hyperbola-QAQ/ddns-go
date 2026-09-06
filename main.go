@@ -158,8 +158,16 @@ func main() {
 
 func run() {
 	// 兼容之前的配置文件
-	conf, _ := config.GetConfigCached()
+	conf, configErr := config.GetConfigCached()
 	conf.CompatibleConfig()
+	if configErr == nil || os.IsNotExist(configErr) {
+		if conf.Username == "" && conf.Password == "" {
+			conf.NotAllowWanAccess = true
+		}
+		if err := conf.PersistIdentity(); err != nil {
+			log.Fatal("保存节点身份失败: ", err)
+		}
+	}
 	// 初始化语言
 	util.InitLogLang(conf.Lang)
 	auditDSN := conf.Audit.DSN
@@ -228,6 +236,7 @@ func runWebServer() error {
 	http.HandleFunc("/cluster/state", web.PeerAuth(web.ClusterState))
 	http.HandleFunc("/cluster/sync", web.PeerAuth(web.ClusterSync))
 	http.HandleFunc("/cluster/join", web.PeerTokenAuth(web.ClusterJoin))
+	http.HandleFunc("/cluster/identity", web.PeerTokenAuth(web.ClusterIdentity))
 	http.HandleFunc("/cluster/token", web.Auth(web.GenerateClusterToken))
 	http.HandleFunc("/audit", web.Auth(web.ManagementPage))
 	http.HandleFunc("/audit/events", web.Auth(web.AuditEvents))

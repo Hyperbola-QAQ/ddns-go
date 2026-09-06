@@ -173,7 +173,8 @@ func nodeNamesJSON(c config.Config) template.JS {
 		}
 	}
 	if !self {
-		nodes = append(nodes, node{c.Cluster.LocalID, "本机"})
+		n, _ := c.Node(c.Cluster.LocalID)
+		nodes = append(nodes, node{n.ID, n.Name})
 	}
 	b, _ := json.Marshal(nodes)
 	return template.JS(b)

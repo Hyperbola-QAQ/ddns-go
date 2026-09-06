@@ -60,9 +60,10 @@ type DNS struct {
 }
 
 type Config struct {
-	DnsConf []DnsConfig
-	Cluster ClusterSettings
-	Audit   AuditSettings
+	identityGenerated bool
+	DnsConf           []DnsConfig
+	Cluster           ClusterSettings
+	Audit             AuditSettings
 	User
 	Webhook
 	// 禁止公网访问
@@ -109,6 +110,7 @@ func GetConfigCached() (conf Config, err error) {
 	configFilePath := util.GetConfigFilePath()
 	_, err = os.Stat(configFilePath)
 	if err != nil {
+		cache.ConfigSingle.ClusterDefaults()
 		cache.Err = err
 		return cloneConfig(*cache.ConfigSingle), err
 	}
@@ -137,6 +139,16 @@ func GetConfigCached() (conf Config, err error) {
 	// remove err
 	cache.Err = nil
 	return cloneConfig(*cache.ConfigSingle), err
+}
+
+// Persist newly generated identity once, so a restart never changes peer identity.
+func (conf *Config) PersistIdentity() error {
+	conf.ClusterDefaults()
+	if !conf.identityGenerated {
+		return nil
+	}
+	conf.identityGenerated = false
+	return conf.SaveConfig()
 }
 
 // CompatibleConfig 兼容之前的配置文件
@@ -181,6 +193,7 @@ func (conf *Config) CompatibleConfig() {
 
 // SaveConfig 保存配置
 func (conf *Config) SaveConfig() (err error) {
+	conf.ClusterDefaults()
 	cache.Lock.Lock()
 	defer cache.Lock.Unlock()
 

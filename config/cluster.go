@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 )
@@ -20,7 +21,8 @@ func RegisterClusterAlgorithm(name string) { clusterAlgorithms.Store(name, true)
 // ClusterPolicy is opt-in; an absent policy preserves the single-node updater.
 type ClusterPolicy struct {
 	Enabled         bool
-	Group           string
+	Group           string `yaml:"-" json:"-"`               // derived from DnsConfig.ID
+	LegacyGroup     string `yaml:"group,omitempty" json:"-"` // old state-file key
 	NodeIDs         string // comma-separated stable IDs, not display names
 	Coordinator     string `yaml:"coordinator,omitempty" json:"-"` // read old files; no scheduling authority
 	Source          string // node, auto, prefix
@@ -35,7 +37,7 @@ type ClusterNode struct {
 	ID          string
 	Name        string
 	URL         string
-	Group       string
+	Group       string `yaml:"-" json:"-"` // ignored legacy node grouping
 	Token       string // token accepted by this peer
 	Suffix      string
 	IPv6Domains string // one record per line for prefix-change batches
@@ -93,7 +95,12 @@ func (p *ClusterPolicy) Defaults(local string) {
 
 func (c *Config) ClusterDefaults() {
 	if c.Cluster.LocalID == "" {
-		c.Cluster.LocalID = "local"
+		c.Cluster.LocalID = strings.ToLower(rand.Text()[:12])
+		c.identityGenerated = true
+	}
+	if c.Cluster.Token == "" {
+		c.Cluster.Token = rand.Text() + rand.Text()
+		c.identityGenerated = true
 	}
 	for i := range c.Cluster.Nodes {
 		if c.Cluster.Nodes[i].Name == "" {
@@ -105,6 +112,7 @@ func (c *Config) ClusterDefaults() {
 			c.DnsConf[i].ID = rand.Text()
 		}
 		c.DnsConf[i].Cluster.Defaults(c.Cluster.LocalID)
+		c.DnsConf[i].Cluster.Group = c.DnsConf[i].ID
 	}
 }
 
@@ -115,7 +123,11 @@ func (c Config) Node(id string) (ClusterNode, bool) {
 		}
 	}
 	if id == c.Cluster.LocalID {
-		return ClusterNode{ID: id, Name: "本机"}, true
+		name, _ := os.Hostname()
+		if name == "" {
+			name = id
+		}
+		return ClusterNode{ID: id, Name: name}, true
 	}
 	return ClusterNode{}, false
 }
@@ -196,9 +208,6 @@ func (c Config) ValidateCluster() error {
 				return fmt.Errorf("节点 %s 不存在或重复", id)
 			}
 			members[id] = true
-			if n.Group != "" && n.Group != p.Group {
-				return fmt.Errorf("节点 %s 不属于配置组 %s", id, p.Group)
-			}
 			if id != c.Cluster.LocalID && (len(n.Token) < 32 || len(c.Cluster.Token) < 32) {
 				return errors.New("节点间通信需配置至少 32 字符的访问令牌和本机令牌")
 			}

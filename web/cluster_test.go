@@ -117,6 +117,7 @@ func TestDNSConfigJSONRoundTrip(t *testing.T) {
 		t.Fatal(result)
 	}
 	saved, _ := config.GetConfigCached()
+	d.Cluster.Group = saved.DnsConf[0].ID
 	if saved.DnsConf[0].Cluster != d.Cluster {
 		t.Fatalf("lost cluster fields: %+v", saved.DnsConf[0].Cluster)
 	}
@@ -207,5 +208,34 @@ func TestGenerateTokenOnPlainHTTP(t *testing.T) {
 	var got struct{ Token string }
 	if json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got.Token) != 64 || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("token generation failed")
+	}
+}
+
+func TestAddressAndTokenDiscoverNode(t *testing.T) {
+	c := setupCluster(t)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cluster/identity" || r.Header.Get("Authorization") != "Bearer "+strings.Repeat("p", 32) {
+			t.Error("incorrect discovery request")
+			http.Error(w, "bad", 401)
+			return
+		}
+		jsonResponse(w, config.ClusterNode{ID: "discovered", Name: "edge-host"})
+	}))
+	defer peer.Close()
+	c.Cluster.Nodes = []config.ClusterNode{{ID: "self", URL: "http://self"}, {URL: peer.URL, Token: strings.Repeat("p", 32)}}
+	body, _ := json.Marshal(map[string]any{"Cluster": c.Cluster, "Audit": c.Audit})
+	r := httptest.NewRequest("POST", "/cluster/settings", bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	ClusterSettings(w, r)
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	got, _ := config.GetConfigCached()
+	if n, ok := got.Node("discovered"); !ok || n.Name != "edge-host" {
+		t.Fatal("node identity not discovered")
+	}
+	if !strings.Contains(w.Body.String(), got.Cluster.Token) {
+		t.Fatal("saved token missing from response")
 	}
 }

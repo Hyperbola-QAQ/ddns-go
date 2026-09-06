@@ -131,7 +131,7 @@ func TestSeparatePageSavesPolicy(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	got, _ := config.GetConfigCached()
-	if !got.DnsConf[0].Cluster.Enabled || got.DnsConf[0].Cluster.Group != "g" {
+	if !got.DnsConf[0].Cluster.Enabled || got.DnsConf[0].Cluster.Group != got.DnsConf[0].ID {
 		t.Fatal("policy not persisted")
 	}
 }

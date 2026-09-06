@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jeessy2/ddns-go/v6/audit"
 	"github.com/jeessy2/ddns-go/v6/cluster"
@@ -84,6 +86,18 @@ func GenerateClusterToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, map[string]string{"Token": hex.EncodeToString(b)})
 }
+
+func ClusterIdentity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	c, _ := config.GetConfigCached()
+	n, _ := c.Node(c.Cluster.LocalID)
+	n.Token = ""
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, n)
+}
 func groupConfig(c config.Config, group string) (config.DnsConfig, bool) {
 	for _, d := range c.DnsConf {
 		if d.Cluster.Enabled && d.Cluster.Group == group {
@@ -134,6 +148,12 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		c, _ := config.GetConfigCached()
 		c.ClusterDefaults()
+		c.Cluster.Nodes = cluster.Members(c)
+		for i := range c.Cluster.Nodes {
+			if c.Cluster.Nodes[i].ID == c.Cluster.LocalID {
+				c.Cluster.Nodes[i].Token = c.Cluster.Token
+			}
+		}
 		jsonResponse(w, struct {
 			Cluster     config.ClusterSettings
 			Audit       config.AuditSettings
@@ -179,10 +199,25 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range in.Cluster.Nodes {
+		n := &in.Cluster.Nodes[i]
+		if n.ID == "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+			var identity config.ClusterNode
+			err := cluster.Call(ctx, *n, c.Cluster.LocalID, "GET", "/cluster/identity", nil, &identity)
+			cancel()
+			if err != nil || identity.ID == "" {
+				http.Error(w, "无法识别节点，请检查访问地址、令牌及目标版本", 400)
+				return
+			}
+			n.ID, n.Name = identity.ID, identity.Name
+		}
 		if in.Cluster.Nodes[i].Token == "" {
 			if n, ok := c.Node(in.Cluster.Nodes[i].ID); ok {
 				in.Cluster.Nodes[i].Token = n.Token
 			}
+		}
+		if n.ID == in.Cluster.LocalID {
+			n.Token = in.Cluster.Token
 		}
 	}
 	in.Cluster.Version = c.Cluster.Version
@@ -246,7 +281,7 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 	if old.Audit != c.Audit {
 		recordChange(r, c, "audit.settings", "", "", old.Audit.Driver, c.Audit.Driver)
 	}
-	jsonResponse(w, map[string]string{"status": "ok"})
+	jsonResponse(w, map[string]any{"status": "ok", "Cluster": c.Cluster})
 }
 func redactNode(n config.ClusterNode) config.ClusterNode { n.Token = "[redacted]"; return n }
 func recordChange(r *http.Request, c config.Config, op, name, node string, before, after any) {
@@ -315,6 +350,7 @@ func AuditEvents(w http.ResponseWriter, r *http.Request) {
 	}{events, audit.Default.Lost.Load()})
 }
 func ManagementPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	t, err := template.ParseFS(writingEmbedFile, "management.html")
 	if err != nil {
 		http.Error(w, "template error", 500)

@@ -108,3 +108,27 @@ func TestGlobalSuffixYAMLAndValidation(t *testing.T) {
 		t.Fatal("too many suffixes accepted")
 	}
 }
+
+func TestGeneratedIdentityAndConfigScope(t *testing.T) {
+	var a, b Config
+	a.DnsConf = []DnsConfig{{ID: "first"}, {ID: "second"}}
+	a.ClusterDefaults()
+	b.ClusterDefaults()
+	if len(a.Cluster.LocalID) != 12 || a.Cluster.LocalID == b.Cluster.LocalID || len(a.Cluster.Token) < 32 {
+		t.Fatal("invalid generated identity")
+	}
+	id := a.Cluster.LocalID
+	a.ClusterDefaults()
+	if a.Cluster.LocalID != id {
+		t.Fatal("identity changed")
+	}
+	for _, d := range a.DnsConf {
+		if d.Cluster.Group != d.ID {
+			t.Fatal("scope differs from config")
+		}
+	}
+	n, _ := a.Node(id)
+	if n.Name == "" || n.Name == "本机" {
+		t.Fatal("hostname missing")
+	}
+}

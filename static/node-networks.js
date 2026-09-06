@@ -23,6 +23,12 @@ function lifetimeText(life) {
   return '有效期 ' + life.ValidSeconds + ' 秒';
 }
 function renderNodeNetworks(conf) {
+  conf.Cluster ||= {};
+  for (const [id,key,fallback] of [['prefixCooperation','Enabled',false],['prefixLength','PrefixLength',64],['prefixCooldown','CooldownSeconds',60]]) {
+    const input=document.getElementById(id);
+    if(input.type==='checkbox')input.checked=!!conf.Cluster[key];else input.value=conf.Cluster[key]||fallback;
+    input.onchange=()=>conf.Cluster[key]=input.type==='checkbox'?input.checked:Number(input.value);
+  }
   if (!conf.Networks?.length) conf.Networks = [legacyNetwork(conf, localNodeID)];
   if (!conf.IPv6Suffix) {
     const lines = conf.Networks.flatMap(n => (n.Ipv6.Domains||[]).map((_,i)=>(n.Suffixes||'').split(/\r?\n/)[i]||''));
@@ -99,7 +105,6 @@ function renderNodeNetworks(conf) {
   document.getElementById('addNetwork').onclick=()=>{
     if(!select.value)return;const n=legacyNetwork(defaultDnsConf,select.value);n.Ipv4.Domains=[];n.Ipv6.Domains=[];
     conf.Networks.push(n);conf.Cluster.NodeIDs=conf.Networks.map(item=>item.NodeID).join(',');
-    if(conf.Networks.length>1){conf.Cluster.Enabled=true;conf.Cluster.Group||=conf.ID||'group-'+(configIndex+1);}
     renderNodeNetworks(conf);
   };
 }
