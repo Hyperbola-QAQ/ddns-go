@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -23,6 +25,15 @@ func runCluster(c config.Config, d config.DnsConfig) error {
 	if err := c.ValidateCluster(); err != nil {
 		return err
 	}
+	alive := cluster.Alive(ctx, c, p)
+	lease, err := cluster.Acquire(ctx, c, alive, "dns/"+p.Group)
+	if errors.Is(err, cluster.ErrBusy) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
 	path := util.GetConfigFilePath() + ".cluster-state.json"
 	states, err := cluster.LoadState(path)
 	if err != nil {
@@ -34,8 +45,15 @@ func runCluster(c config.Config, d config.DnsConfig) error {
 		states[p.Group] = state
 	}
 	layout := cluster.LayoutHash(c, d)
-	if state.LayoutHash != layout {
-		state.Prefix = ""
+	layoutChanged := state.LayoutHash != layout
+	if layoutChanged {
+		oldPrefix, e := netip.ParsePrefix(state.Prefix)
+		if e != nil || oldPrefix.Bits() != p.PrefixLength {
+			state.Prefix = ""
+			state.PrefixAt = time.Time{}
+			state.Retired = nil
+		}
+		state.LastKey = ""
 		state.Pending = nil
 		state.PendingPrefix = ""
 		state.LayoutHash = layout
@@ -46,126 +64,109 @@ func runCluster(c config.Config, d config.DnsConfig) error {
 	if state.Reports == nil {
 		state.Reports = map[string]string{}
 	}
-	alive := cluster.Alive(ctx, c, p)
-	if len(alive) == 0 {
-		return errors.New("所有关联节点均不可用，本次不更新 DNS")
+	// Read the newest completed or pending state while holding the execution claim.
+	for _, n := range alive {
+		if n.ID == c.Cluster.LocalID {
+			continue
+		}
+		var remote cluster.State
+		if cluster.Call(ctx, n, c.Cluster.LocalID, "GET", "/cluster/state?group="+url.QueryEscape(p.Group), nil, &remote) == nil && remote.Version.Newer(state.Version) && remote.LayoutHash == layout {
+			state = &remote
+			layoutChanged = false
+		}
 	}
-	execute := func(jobs []cluster.Job, batch bool) error {
-		candidates := alive
-		if batch {
-			candidates = cluster.Alive(ctx, c, p)
+	if state.Addresses == nil {
+		state.Addresses = map[string]string{}
+	}
+	if state.Reports == nil {
+		state.Reports = map[string]string{}
+	}
+	saved := false
+	persist := func() error {
+		state.Version.Counter++
+		state.Version.Node = c.Cluster.LocalID
+		err := cluster.SaveGroup(path, p.Group, state)
+		if err == nil {
+			saved = true
 		}
-		executor, err := cluster.Select(p.Algorithm, p.Group+"/executor", candidates)
-		if err != nil {
-			return err
-		}
-		audit.Record(audit.Event{Actor: "scheduler", Host: c.Cluster.LocalID, Operation: "node.select", Config: d.DisplayName(), Node: executor.Name, After: executor.ID, Result: "selected"})
-		req := cluster.UpdateRequest{Group: p.Group, Jobs: jobs, LayoutHash: layout}
-		if executor.ID == c.Cluster.LocalID {
-			return ExecuteCluster(c, d, req, c.Cluster.LocalID)
-		}
-		err = cluster.Execute(ctx, c, executor, req)
-		result := "ok"
-		if err != nil {
-			result = "failed"
-		}
-		audit.Record(audit.Event{Actor: "scheduler", Host: c.Cluster.LocalID, Operation: "dns.dispatch", Config: d.DisplayName(), Node: executor.Name, Result: result})
 		return err
 	}
+	defer func() {
+		if !saved {
+			return
+		}
+		for _, n := range alive {
+			if n.ID == c.Cluster.LocalID {
+				continue
+			}
+			var result any
+			push, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			err := cluster.Call(push, n, c.Cluster.LocalID, "POST", "/cluster/state", struct {
+				Group  string
+				Ticket string
+				State  *cluster.State
+			}{p.Group, lease.Claim.Ticket, state}, &result)
+			cancel()
+			if err != nil {
+				util.Log("节点 %s 的运行状态将在下次任务时重试同步", n.ID)
+			}
+		}
+	}()
+	execute := func(jobs []cluster.Job, batch bool) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !lease.Valid() {
+			return errors.New("本机执行权已过期")
+		}
+		if batch {
+			cluster.Alive(ctx, c, p)
+		} // actively probe again immediately before a prefix batch
+		audit.Record(audit.Event{Actor: "scheduler", Host: c.Cluster.LocalID, Operation: "node.select", Config: d.DisplayName(), Node: c.Cluster.LocalID, After: c.Cluster.LocalID, Result: "local execution"})
+		return executeCluster(ctx, c, d, cluster.UpdateRequest{Group: p.Group, Jobs: jobs, LayoutHash: layout}, c.Cluster.LocalID)
+	}
+
+	prefixUpdated := false
 	// A persisted batch is retried before observing further prefix changes.
 	if len(state.Pending) > 0 {
 		if err := execute(state.Pending, true); err != nil {
 			return err
 		}
-		for _, j := range state.Pending {
-			state.Addresses[j.NodeID] = j.IPv6
-		}
-		state.Prefix = state.PendingPrefix
+		prefixUpdated = true
+		state.CommitPrefix(state.PendingPrefix, p.CooldownSeconds, time.Now().UTC())
 		state.Pending = nil
 		state.PendingPrefix = ""
-		if err := cluster.SaveState(path, states); err != nil {
+		if err := persist(); err != nil {
 			return err
 		}
 	}
 	reports := map[string]config.ResolvedIP{}
-	changed := map[string]bool{}
 	for _, n := range alive {
-		ip, err := cluster.ReadIP(ctx, c, d, n)
-		if err != nil {
+		ip, e := cluster.ReadIP(ctx, c, d, n)
+		if e != nil {
 			continue
 		}
 		reports[n.ID] = ip
 		if ip.IPv6 != "" {
-			prefix, err := cluster.Prefix(ip.IPv6, p.PrefixLength)
-			if err != nil {
-				continue
-			}
-			old := state.Reports[n.ID]
-			if state.Prefix == "" || (old != "" && old != ip.IPv6 && prefix != state.Prefix) {
-				changed[prefix] = true
-			}
 			state.Reports[n.ID] = ip.IPv6
 			if state.Addresses[n.ID] == "" {
 				state.Addresses[n.ID] = ip.IPv6
 			}
 		}
 	}
-	if len(changed) > 1 {
-		return errors.New("节点上报了多个不同的新 IPv6 前缀，请检查配置组是否属于同一网络")
+	prefix, err := state.CandidatePrefix(reports, p.PrefixLength, time.Now().UTC())
+	if err != nil {
+		return err
 	}
-	sourceCandidates := []config.ClusterNode{}
-	for _, n := range alive {
-		if ip, ok := reports[n.ID]; ok {
-			if d.Ipv4.Enable && hasDomains(d.Ipv4.Domains) && ip.IPv4 == "" {
-				continue
-			}
-			if d.Ipv6.Enable && hasDomains(d.Ipv6.Domains) && ip.IPv6 == "" && (p.Source != "prefix" || state.Prefix == "") {
-				continue
-			}
-			sourceCandidates = append(sourceCandidates, n)
+	if prefix != "" && (prefix != state.Prefix || layoutChanged) {
+		jobs, e := prefixJobs(c, d, state, prefix)
+		if e != nil {
+			return e
 		}
-	}
-	var source config.ClusterNode
-	if p.Source == "auto" {
-		source, err = cluster.Select(p.Algorithm, p.Group+"/source", sourceCandidates)
-	} else {
-		for _, n := range sourceCandidates {
-			if n.ID == p.SourceNode {
-				source = n
-			}
-		}
-		if source.ID == "" {
-			err = errors.New("指定 IP 来源节点不可用")
-		}
-	}
-	// Prefix propagation is independent of the normal source node's availability.
-	for prefix := range changed {
-		if prefix == state.Prefix {
-			continue
-		}
-		jobs := []cluster.Job{}
-		for _, id := range p.IDs() {
-			n, _ := c.Node(id)
-			suffix := n.Suffix
-			if suffix == "" {
-				suffix = state.Addresses[id]
-			}
-			if strings.TrimSpace(n.IPv6Domains) == "" {
-				continue
-			}
-			if suffix == "" {
-				return fmt.Errorf("节点 %s 尚无 IPv6 后缀，请先配置后缀或等待其上报", id)
-			}
-			address, e := cluster.Compose(prefix, suffix)
-			if e != nil {
-				return e
-			}
-			jobs = append(jobs, cluster.Job{NodeID: id, IPv6: address, Batch: true})
-		}
-		audit.Record(audit.Event{Actor: "scheduler", Host: c.Cluster.LocalID, Operation: "ipv6.prefix", Config: d.DisplayName(), Before: state.Prefix, After: prefix, Result: "pending"})
 		state.Pending = jobs
 		state.PendingPrefix = prefix
-		if e := cluster.SaveState(path, states); e != nil {
+		audit.Record(audit.Event{Actor: "scheduler", Host: c.Cluster.LocalID, Operation: "ipv6.prefix", Config: d.DisplayName(), Before: state.Prefix, After: prefix, Result: "pending"})
+		if e := persist(); e != nil {
 			return e
 		}
 		if len(jobs) > 0 {
@@ -173,42 +174,195 @@ func runCluster(c config.Config, d config.DnsConfig) error {
 				return e
 			}
 		}
-		for _, j := range jobs {
-			state.Addresses[j.NodeID] = j.IPv6
-		}
-		state.Prefix = prefix
+		prefixUpdated = true
+		state.CommitPrefix(prefix, p.CooldownSeconds, time.Now().UTC())
 		state.Pending = nil
 		state.PendingPrefix = ""
 	}
-	if e := cluster.SaveState(path, states); e != nil {
-		return e
+	if err := persist(); err != nil {
+		return err
 	}
+	jobs, err := normalJobs(c, d, state, reports, alive)
 	if err != nil {
 		return err
 	}
-	ip := reports[source.ID]
-	if p.Source == "prefix" {
-		if state.Prefix == "" {
-			return errors.New("尚未获取 IPv6 前缀")
+	if len(jobs) == 0 {
+		return nil
+	}
+	keyBytes, _ := json.Marshal(struct {
+		Layout  string
+		Version config.SyncVersion
+		Jobs    []cluster.Job
+	}{layout, c.Cluster.Version, jobs})
+	key := string(keyBytes)
+	if state.LastKey == key && time.Since(state.LastAt) >= 0 && time.Since(state.LastAt) < time.Minute {
+		return nil
+	}
+	executeJobs := jobs
+	if prefixUpdated && len(d.Networks) > 0 {
+		executeJobs = nil
+		for _, job := range jobs {
+			if job.IPv4 != "" {
+				executeJobs = append(executeJobs, job)
+			}
 		}
-		ip.IPv6, err = cluster.Compose(state.Prefix, p.Suffix)
-		if err != nil {
+	}
+	if len(executeJobs) > 0 {
+		if err := execute(executeJobs, false); err != nil {
 			return err
 		}
 	}
-	return execute([]cluster.Job{{NodeID: source.ID, IPv4: ip.IPv4, IPv6: ip.IPv6}}, false)
+	state.LastKey = key
+	state.LastAt = time.Now().UTC()
+	return persist()
+}
+
+func prefixJobs(c config.Config, d config.DnsConfig, s *cluster.State, prefix string) ([]cluster.Job, error) {
+	var jobs []cluster.Job
+	for _, id := range d.Cluster.IDs() {
+		n, _ := c.Node(id)
+		if len(d.Networks) > 0 {
+			network, ok := d.NetworkWithSuffix(id)
+			if !ok || !network.Ipv6.Enable || !hasDomains(network.Ipv6.Domains) {
+				continue
+			}
+			ip := s.Addresses[id]
+			if ip == "" && strings.TrimSpace(network.Suffixes) == "" {
+				return nil, fmt.Errorf("节点 %s 尚无可用 IPv6 后缀", id)
+			}
+			next, err := networkJobs(network, config.ResolvedIP{IPv6: ip}, prefix, true)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, next...)
+		} else {
+			suffix := n.Suffix
+			if suffix == "" {
+				suffix = s.Addresses[id]
+			}
+			if strings.TrimSpace(n.IPv6Domains) == "" {
+				continue
+			}
+			if suffix == "" {
+				return nil, fmt.Errorf("节点 %s 尚无 IPv6 后缀", id)
+			}
+			address, err := cluster.Compose(prefix, suffix)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, cluster.Job{NodeID: id, IPv6: address, Batch: true})
+		}
+	}
+	return jobs, nil
+}
+func networkJobs(n config.NodeNetwork, ip config.ResolvedIP, prefix string, batch bool) ([]cluster.Job, error) {
+	var jobs []cluster.Job
+	if n.Ipv4.Enable && !batch && hasDomains(n.Ipv4.Domains) && ip.IPv4 != "" {
+		jobs = append(jobs, cluster.Job{NodeID: n.NodeID, IPv4: ip.IPv4})
+	}
+	if !n.Ipv6.Enable || !hasDomains(n.Ipv6.Domains) {
+		return jobs, nil
+	}
+	suffixes := strings.Split(strings.ReplaceAll(n.Suffixes, "\r\n", "\n"), "\n")
+	for i := range n.Ipv6.Domains {
+		address := ip.IPv6
+		if strings.TrimSpace(n.Suffixes) != "" && i < len(suffixes) && strings.TrimSpace(suffixes[i]) != "" {
+			address = strings.TrimSpace(suffixes[i])
+		}
+		if address == "" {
+			if batch {
+				return nil, fmt.Errorf("节点 %s 尚无可用 IPv6 后缀", n.NodeID)
+			}
+			continue
+		}
+		if prefix != "" {
+			var err error
+			address, err = cluster.Compose(prefix, address)
+			if err != nil {
+				return nil, err
+			}
+		}
+		jobs = append(jobs, cluster.Job{NodeID: n.NodeID, IPv6: address, Batch: batch, IPv6Index: new(int)})
+		*jobs[len(jobs)-1].IPv6Index = i
+	}
+	return jobs, nil
+}
+func normalJobs(c config.Config, d config.DnsConfig, s *cluster.State, reports map[string]config.ResolvedIP, alive []config.ClusterNode) ([]cluster.Job, error) {
+	if len(d.Networks) > 0 {
+		var jobs []cluster.Job
+		for _, raw := range d.Networks {
+			n, _ := d.NetworkWithSuffix(raw.NodeID)
+			ip, ok := reports[n.NodeID]
+			if !ok {
+				continue
+			}
+			next, err := networkJobs(n, ip, s.Prefix, false)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, next...)
+		}
+		return jobs, nil
+	}
+	// Compatibility with previously saved source-node policies.
+	var candidates []config.ClusterNode
+	for _, n := range alive {
+		ip, ok := reports[n.ID]
+		if !ok {
+			continue
+		}
+		if d.Ipv4.Enable && hasDomains(d.Ipv4.Domains) && ip.IPv4 == "" {
+			continue
+		}
+		if d.Ipv6.Enable && hasDomains(d.Ipv6.Domains) && ip.IPv6 == "" {
+			continue
+		}
+		candidates = append(candidates, n)
+	}
+	var source config.ClusterNode
+	var err error
+	if d.Cluster.Source == "auto" {
+		source, err = cluster.Select(d.Cluster.Algorithm, d.Cluster.Group+"/source", candidates)
+	} else {
+		for _, n := range candidates {
+			if n.ID == d.Cluster.SourceNode || (d.Cluster.SourceNode == "local" && n.ID == c.Cluster.LocalID) {
+				source = n
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if source.ID == "" {
+		return nil, errors.New("指定 IP 来源节点不可用")
+	}
+	ip := reports[source.ID]
+	if ip.IPv6 != "" && s.Prefix != "" {
+		suffix := ip.IPv6
+		if d.Cluster.Source == "prefix" {
+			suffix = d.Cluster.Suffix
+		}
+		ip.IPv6, err = cluster.Compose(s.Prefix, suffix)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return []cluster.Job{{NodeID: source.ID, IPv4: ip.IPv4, IPv6: ip.IPv6}}, nil
 }
 
 // ExecuteCluster uses local provider credentials and local domain bindings only.
-// It never recursively schedules or accepts executable settings from a peer.
+// Every node executes locally after acquiring a short-lived peer claim.
 func ExecuteCluster(c config.Config, d config.DnsConfig, r cluster.UpdateRequest, actor string) error {
-	if !d.Cluster.Enabled || r.Group != d.Cluster.Group || actor != d.Cluster.Coordinator {
-		return errors.New("配置组或调度节点不匹配")
+	return executeCluster(context.Background(), c, d, r, actor)
+}
+func executeCluster(ctx context.Context, c config.Config, d config.DnsConfig, r cluster.UpdateRequest, actor string) error {
+	if !d.Cluster.Enabled || r.Group != d.Cluster.Group || actor != c.Cluster.LocalID || !cluster.IsMember(d.Cluster, actor) {
+		return errors.New("配置组或本机执行身份不匹配")
 	}
 	if r.LayoutHash != cluster.LayoutHash(c, d) {
 		return errors.New("节点配置组设置不一致，请同步组成员、域名与 IP 来源设置")
 	}
-	if len(r.Jobs) == 0 || len(r.Jobs) > len(d.Cluster.IDs())+1 {
+	if len(r.Jobs) == 0 || len(r.Jobs) > 4096 {
 		return errors.New("无效更新批次")
 	}
 	members := map[string]bool{}
@@ -229,15 +383,36 @@ func ExecuteCluster(c config.Config, d config.DnsConfig, r cluster.UpdateRequest
 	updateMu.Lock()
 	defer updateMu.Unlock()
 	for _, j := range r.Jobs {
-		dc := d
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		dc := d.ForNode(j.NodeID)
+		dc.RequestContext = ctx
 		n, _ := c.Node(j.NodeID)
-		if j.Batch {
+		if j.Batch && len(d.Networks) == 0 {
 			dc.Ipv4.Enable = false
 			dc.Ipv4.Domains = nil
 			dc.Ipv6.Domains = util.SplitLines(n.IPv6Domains)
 		}
-		if j.Batch && (!dc.Ipv6.Enable || strings.TrimSpace(n.IPv6Domains) == "") {
+		if j.Batch && len(d.Networks) == 0 && (!dc.Ipv6.Enable || strings.TrimSpace(n.IPv6Domains) == "") {
 			return errors.New("节点未配置 IPv6 域名或 IPv6 未启用")
+		}
+		if len(d.Networks) > 0 {
+			if j.IPv4 == "" {
+				dc.Ipv4.Enable = false
+				dc.Ipv4.Domains = nil
+			}
+			if j.IPv6 == "" {
+				dc.Ipv6.Enable = false
+				dc.Ipv6.Domains = nil
+			}
+			if j.IPv6Index != nil {
+				idx := *j.IPv6Index
+				if idx < 0 || idx >= len(dc.Ipv6.Domains) {
+					return errors.New("域名索引无效")
+				}
+				dc.Ipv6.Domains = []string{dc.Ipv6.Domains[idx]}
+			}
 		}
 		if dc.Ipv4.Enable && hasDomains(dc.Ipv4.Domains) && j.IPv4 == "" {
 			return errors.New("缺少 IPv4 地址")
@@ -261,9 +436,9 @@ func ExecuteCluster(c config.Config, d config.DnsConfig, r cluster.UpdateRequest
 			IPv4Domains []string
 			IPv6Domains []string
 		}{j.IPv4, j.IPv6, dc.Ipv4.Domains, dc.Ipv6.Domains})
-		audit.Record(audit.Event{Actor: actor, Host: c.Cluster.LocalID, Operation: "dns.update", Config: d.DisplayName(), Node: n.Name, Before: previousValue(d.Cluster.Group + "/" + j.NodeID + fmt.Sprint(j.Batch)), After: string(after), Result: result})
+		audit.Record(audit.Event{Actor: actor, Host: c.Cluster.LocalID, Operation: "dns.update", Config: d.DisplayName(), Node: n.Name, Before: previousValue(d.Cluster.Group + "/" + j.NodeID + fmt.Sprint(j.Batch) + fmt.Sprint(j.IPv6IndexValue())), After: string(after), Result: result})
 		if result == "ok" {
-			previousUpdates[d.Cluster.Group+"/"+j.NodeID+fmt.Sprint(j.Batch)] = string(after)
+			previousUpdates[d.Cluster.Group+"/"+j.NodeID+fmt.Sprint(j.Batch)+fmt.Sprint(j.IPv6IndexValue())] = string(after)
 		}
 		if result != "ok" {
 			return errors.New("DNS 服务商更新失败，稍后重试")

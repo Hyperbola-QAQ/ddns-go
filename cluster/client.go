@@ -19,10 +19,11 @@ import (
 var Client = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 type Job struct {
-	NodeID string
-	IPv4   string
-	IPv6   string
-	Batch  bool
+	NodeID    string
+	IPv4      string
+	IPv6      string
+	Batch     bool
+	IPv6Index *int `json:",omitempty"`
 }
 type UpdateRequest struct {
 	LayoutHash string
@@ -45,9 +46,6 @@ func request(ctx context.Context, n config.ClusterNode, local, method, path stri
 	req.Header.Set("X-DDNS-Node", local)
 	req.Header.Set("Content-Type", "application/json")
 	client := *Client
-	if path == "/cluster/update" {
-		client.Timeout = 90 * time.Second
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -116,6 +114,7 @@ func ReadIP(ctx context.Context, c config.Config, d config.DnsConfig, n config.C
 		return ip, err
 	}
 	if n.ID == c.Cluster.LocalID {
+		d = d.ForNode(n.ID)
 		d.Resolved = nil
 		if d.Ipv4.Enable {
 			ip.IPv4 = d.GetIpv4Addr()
@@ -124,7 +123,7 @@ func ReadIP(ctx context.Context, c config.Config, d config.DnsConfig, n config.C
 			ip.IPv6 = d.GetIpv6Addr()
 		}
 	} else {
-		err := request(ctx, n, c.Cluster.LocalID, "GET", "/cluster/ip?group="+url.QueryEscape(d.Cluster.Group), nil, &ip)
+		err := request(ctx, n, c.Cluster.LocalID, "GET", "/cluster/ip?group="+url.QueryEscape(d.Cluster.Group)+"&layout="+LayoutHash(c, d), nil, &ip)
 		if err != nil {
 			return ip, err
 		}
@@ -134,16 +133,10 @@ func ReadIP(ctx context.Context, c config.Config, d config.DnsConfig, n config.C
 	}
 	return ip, ValidateIP(ip)
 }
-func Execute(ctx context.Context, c config.Config, n config.ClusterNode, r UpdateRequest) error {
-	var result struct {
-		Status string
-		Error  string
+
+func (j Job) IPv6IndexValue() int {
+	if j.IPv6Index == nil {
+		return -1
 	}
-	if err := request(ctx, n, c.Cluster.LocalID, "POST", "/cluster/update", r, &result); err != nil {
-		return err
-	}
-	if result.Status != "ok" {
-		return errors.New("远程 DNS 更新失败: " + result.Error)
-	}
-	return nil
+	return *j.IPv6Index
 }

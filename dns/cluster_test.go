@@ -26,7 +26,7 @@ func (choosePeer) Select(_ string, nodes []config.ClusterNode) (config.ClusterNo
 	return cluster.Select("round-robin", "fallback", nodes)
 }
 
-func TestClusterPrefixRemoteExecutionAndRetry(t *testing.T) {
+func TestClusterPrefixLocalExecutionAndRetry(t *testing.T) {
 	t.Setenv(util.ConfigFilePathENV, filepath.Join(t.TempDir(), "config.yaml"))
 	var mu sync.Mutex
 	records := map[string]string{}
@@ -45,15 +45,15 @@ func TestClusterPrefixRemoteExecutionAndRetry(t *testing.T) {
 	var ip atomic.Value
 	ip.Store("2001:db8:1::a")
 	c := config.Config{Cluster: config.ClusterSettings{LocalID: "self", Token: strings.Repeat("s", 32)}}
-	d := config.DnsConfig{Name: "home", DNS: config.DNS{Name: "callback", ID: provider.URL + "?domain=#{domain}&ip=#{ip}"}, Cluster: config.ClusterPolicy{Enabled: true, Group: "home", NodeIDs: "peer,offline", Coordinator: "peer", Source: "node", SourceNode: "peer", Algorithm: "random", PrefixLength: 64}}
-	// Scheduler identity can be independent of the selected source/executor.
+	d := config.DnsConfig{Name: "home", DNS: config.DNS{Name: "callback", ID: provider.URL + "?domain=#{domain}&ip=#{ip}"}, Cluster: config.ClusterPolicy{Enabled: true, Group: "home", NodeIDs: "peer,offline", Source: "node", SourceNode: "peer", Algorithm: "random", PrefixLength: 64}}
+	// The triggering executor may differ from the IP source.
 	d.Cluster.NodeIDs = "self,peer,offline"
-	d.Cluster.Coordinator = "self"
 	d.Ipv6.Enable = true
 	d.Ipv6.GetType = "cmd"
 	d.Ipv6.Cmd = "printf '2001:db8:1::1'"
 	d.Ipv6.Domains = []string{"service.example.com"}
 	var probes, updates atomic.Int32
+	peerClaims := cluster.NewClaims()
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/ping":
@@ -61,24 +61,18 @@ func TestClusterPrefixRemoteExecutionAndRetry(t *testing.T) {
 			w.Write([]byte(`{"status":"ok"}`))
 		case "/cluster/ip":
 			json.NewEncoder(w).Encode(config.ResolvedIP{IPv6: ip.Load().(string)})
-		case "/cluster/update":
-			updates.Add(1)
-			if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("p", 32) {
-				t.Error("missing peer auth")
+		case "/cluster/claim":
+			var q cluster.Claim
+			json.NewDecoder(r.Body).Decode(&q)
+			json.NewEncoder(w).Encode(peerClaims.Apply(q))
+		case "/cluster/state":
+			if r.Method == "GET" {
+				json.NewEncoder(w).Encode(cluster.State{})
+			} else {
+				updates.Add(1)
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 			}
-			var req cluster.UpdateRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Error(err)
-			}
-			// Execute the real provider code as the remote worker, using its own local config.
-			remote := c
-			remote.Cluster.LocalID = "peer"
-			err := ExecuteCluster(remote, d, req, "self")
-			status := "ok"
-			if err != nil {
-				status = "failed"
-			}
-			json.NewEncoder(w).Encode(map[string]string{"Status": status})
+
 		}
 	}))
 	defer peer.Close()
@@ -96,8 +90,8 @@ func TestClusterPrefixRemoteExecutionAndRetry(t *testing.T) {
 	if err := runCluster(c, d); err != nil {
 		t.Fatal(err)
 	}
-	if updates.Load() < 2 || probes.Load() < 2 {
-		t.Fatal("batch did not re-probe and execute remotely")
+	if updates.Load() < 1 || probes.Load() < 2 {
+		t.Fatal("batch did not re-probe and broadcast completion")
 	}
 	mu.Lock()
 	if records["sleeping.example.com"] != "2001:db8:1::ff" {
@@ -140,7 +134,7 @@ func TestClusterPrefixRemoteExecutionAndRetry(t *testing.T) {
 
 func TestExecuteClusterRejectsUntrustedPlan(t *testing.T) {
 	c := config.Config{Cluster: config.ClusterSettings{LocalID: "self"}}
-	d := config.DnsConfig{Cluster: config.ClusterPolicy{Enabled: true, Group: "g", Coordinator: "self", NodeIDs: "self"}}
+	d := config.DnsConfig{Cluster: config.ClusterPolicy{Enabled: true, Group: "g", NodeIDs: "self"}}
 	r := cluster.UpdateRequest{Group: "g", LayoutHash: cluster.LayoutHash(c, d), Jobs: []cluster.Job{{NodeID: "self", IPv6: "2001:db8::1"}}}
 	if err := ExecuteCluster(c, d, r, "intruder"); err == nil {
 		t.Fatal("non-coordinator accepted")
@@ -158,11 +152,107 @@ func TestExecuteClusterRejectsUntrustedPlan(t *testing.T) {
 
 func TestIPv6OnlyIgnoresBlankIPv4Domain(t *testing.T) {
 	c := config.Config{Cluster: config.ClusterSettings{LocalID: "self"}}
-	d := config.DnsConfig{Cluster: config.ClusterPolicy{Enabled: true, Group: "g", Coordinator: "self", NodeIDs: "self"}}
+	d := config.DnsConfig{Cluster: config.ClusterPolicy{Enabled: true, Group: "g", NodeIDs: "self"}}
 	d.Ipv4.Enable = true
 	d.Ipv4.Domains = []string{"", " "}
 	r := cluster.UpdateRequest{Group: "g", LayoutHash: cluster.LayoutHash(c, d), Jobs: []cluster.Job{{NodeID: "self", IPv6: "2001:db8::1"}}}
 	if err := ExecuteCluster(c, d, r, "self"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNodeNetworksUpdateOwnDomainsAndCustomSuffixes(t *testing.T) {
+	t.Setenv(util.ConfigFilePathENV, filepath.Join(t.TempDir(), "config.yaml"))
+	var mu sync.Mutex
+	records := map[string]string{}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		records[r.URL.Query().Get("domain")] = r.URL.Query().Get("ip")
+		mu.Unlock()
+		w.Write([]byte("ok"))
+	}))
+	defer provider.Close()
+	var ip atomic.Value
+	ip.Store("2001:db8:1::2")
+	claims := cluster.NewClaims()
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ping":
+			w.Write([]byte(`{"status":"ok"}`))
+		case "/cluster/ip":
+			json.NewEncoder(w).Encode(config.ResolvedIP{IPv4: "192.0.2.2", IPv6: ip.Load().(string)})
+		case "/cluster/claim":
+			var q cluster.Claim
+			json.NewDecoder(r.Body).Decode(&q)
+			json.NewEncoder(w).Encode(claims.Apply(q))
+		case "/cluster/state":
+			json.NewEncoder(w).Encode(cluster.State{})
+		}
+	}))
+	defer peer.Close()
+	c := config.Config{Cluster: config.ClusterSettings{LocalID: "self", Token: strings.Repeat("a", 32), Nodes: []config.ClusterNode{{ID: "peer", URL: peer.URL, Token: strings.Repeat("b", 32)}}}}
+	d := config.DnsConfig{ID: "networks", DNS: config.DNS{Name: "callback", ID: provider.URL + "?domain=#{domain}&ip=#{ip}"}, Cluster: config.ClusterPolicy{Enabled: true, Group: "g", NodeIDs: "self,peer"}, Networks: []config.NodeNetwork{
+		{NodeID: "self", Ipv4: config.IPConfig{Enable: true, GetType: "cmd", Cmd: "printf '192.0.2.1'", Domains: []string{"self4.example.com"}}, Ipv6: config.IPConfig{Enable: true, GetType: "cmd", Cmd: "printf '2001:db8:1::1'", Domains: []string{"self6.example.com"}}},
+		{NodeID: "peer", Ipv4: config.IPConfig{Enable: true, GetType: "cmd", Cmd: "printf '192.0.2.2'", Domains: []string{"peer4.example.com"}}, Ipv6: config.IPConfig{Enable: true, GetType: "cmd", Cmd: "printf '2001:db8:1::2'", Domains: []string{"peer6.example.com", "custom.example.com"}}, Suffixes: "::2\n::1000"},
+	}}
+	c.DnsConf = []config.DnsConfig{d}
+	c.ClusterDefaults()
+	d = c.DnsConf[0]
+	if err := runCluster(c, d); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if records["self4.example.com"] != "192.0.2.1" || records["peer4.example.com"] != "192.0.2.2" || records["custom.example.com"] != "2001:db8:1::1000" {
+		t.Fatal(records)
+	}
+	mu.Unlock()
+	ip.Store("2001:db8:2::2")
+	if err := runCluster(c, d); err != nil {
+		t.Fatal(err)
+	}
+	// The peer briefly reports the retired prefix; regular jobs must not write it back.
+	ip.Store("2001:db8:1::2")
+	if err := runCluster(c, d); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if records["self6.example.com"] != "2001:db8:2::1" || records["peer6.example.com"] != "2001:db8:2::2" || records["custom.example.com"] != "2001:db8:2::1000" {
+		t.Fatal("stale prefix escaped debounce", records)
+	}
+}
+
+func TestBlankSuffixKeepsFirstDomainHostBits(t *testing.T) {
+	n := config.NodeNetwork{NodeID: "a", Ipv6: config.IPConfig{Enable: true, Domains: []string{"a.example.com", "b.example.com"}}, Suffixes: "\n::1000"}
+	jobs, err := networkJobs(n, config.ResolvedIP{IPv6: "2001:db8:1::12"}, "2001:db8:2::/64", true)
+	if err != nil || len(jobs) != 2 || jobs[0].IPv6 != "2001:db8:2::12" || jobs[1].IPv6 != "2001:db8:2::1000" {
+		t.Fatal("suffix line alignment lost", jobs, err)
+	}
+}
+
+func TestOneGlobalIPv6SuffixList(t *testing.T) {
+	d := config.DnsConfig{IPv6Suffix: &config.SuffixConfig{Enable: true, IPs: "::1000\n\n::2000"}, Networks: []config.NodeNetwork{
+		{NodeID: "a", Ipv6: config.IPConfig{Enable: true, Domains: []string{"a.example.com", "a2.example.com"}}, Suffixes: "::dead"},
+		{NodeID: "b", Ipv6: config.IPConfig{Enable: true, Domains: []string{"b.example.com", "b2.example.com"}}},
+	}}
+	for _, tt := range []struct {
+		id   string
+		want []string
+	}{{"a", []string{"2001:db8::1000", "2001:db8::12"}}, {"b", []string{"2001:db8::2000", "2001:db8::12"}}} {
+		n, _ := d.NetworkWithSuffix(tt.id)
+		jobs, err := networkJobs(n, config.ResolvedIP{IPv6: "2001:db8:1::12"}, "2001:db8::/64", true)
+		if err != nil || len(jobs) != 2 {
+			t.Fatal(err)
+		}
+		for i := range jobs {
+			if jobs[i].IPv6 != tt.want[i] {
+				t.Fatal(jobs)
+			}
+		}
+	}
+	d.IPv6Suffix.Enable = false
+	n, _ := d.NetworkWithSuffix("a")
+	if n.Suffixes != "" {
+		t.Fatal("disabled global setting used legacy per-node suffix")
 	}
 }

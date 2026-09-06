@@ -21,13 +21,15 @@ func LayoutHash(c config.Config, d config.DnsConfig) string {
 		nodes = append(nodes, binding{id, n.Suffix, n.IPv6Domains})
 	}
 	b, _ := json.Marshal(struct {
-		Policy config.ClusterPolicy
-		Nodes  []binding
-		IPv4   []string
-		IPv6   []string
-		V4     bool
-		V6     bool
-	}{d.Cluster, nodes, d.Ipv4.Domains, d.Ipv6.Domains, d.Ipv4.Enable, d.Ipv6.Enable})
+		Policy     config.ClusterPolicy
+		Nodes      []binding
+		IPv4       []string
+		IPv6       []string
+		V4         bool
+		V6         bool
+		Networks   []config.NodeNetwork
+		IPv6Suffix *config.SuffixConfig
+	}{d.Cluster, nodes, d.Ipv4.Domains, d.Ipv6.Domains, d.Ipv4.Enable, d.Ipv6.Enable, d.Networks, d.IPv6Suffix})
 	hash := sha256.Sum256(b)
 	return hex.EncodeToString(hash[:])
 }

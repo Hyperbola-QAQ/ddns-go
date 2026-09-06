@@ -30,11 +30,13 @@ func SetLang(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	conf.Lang = util.InitLogLang(lang)
+	bumpClusterVersion(&conf)
 	if err := conf.SaveConfig(); err != nil {
 		returnError(writer, err.Error())
 		return
 	}
 
+	queueClusterSync()
 	recordChange(request, conf, "settings.language", "", conf.Cluster.LocalID, previous, conf.Lang)
 	byt, _ := json.Marshal(map[string]string{"result": "ok", "lang": conf.Lang})
 	writer.Write(byt)

@@ -74,18 +74,6 @@
         </div>
 
         <form id="formDnsConf">
-<div class="portlet"><h5 class="portlet__head">集群与 IP 来源</h5><div class="portlet__body">
-<label><input type="checkbox" name="ClusterEnabled" id="ClusterEnabled"> 启用此配置的集群更新</label>
-<div class="form-group"><label for="ClusterGroup">配置组标识</label><input class="form-control" name="ClusterGroup" id="ClusterGroup"></div>
-<div class="form-group"><label for="ClusterNodeIDs">关联节点 ID（逗号分隔）</label><input class="form-control" name="ClusterNodeIDs" id="ClusterNodeIDs"></div>
-<div class="form-group"><label for="ClusterCoordinator">调度节点 ID</label><input class="form-control" name="ClusterCoordinator" id="ClusterCoordinator"></div>
-<div class="form-group"><label for="ClusterSource">IP获取来源</label><select class="form-control" name="ClusterSource" id="ClusterSource"><option value="node">指定节点（默认本机）</option><option value="auto">自动选择存活节点</option><option value="prefix">IPv6 前缀＋自定义后缀</option></select></div>
-<div class="form-group"><label for="ClusterSourceNode">指定来源节点 ID</label><input class="form-control" name="ClusterSourceNode" id="ClusterSourceNode"></div>
-<div class="form-group"><label for="ClusterAlgorithm">节点选择算法</label><select class="form-control" name="ClusterAlgorithm" id="ClusterAlgorithm"><option value="random">随机</option><option value="round-robin">轮询</option></select></div>
-<div class="form-group"><label for="ClusterPrefixLength">IPv6 前缀长度（默认 64）</label><input class="form-control" name="ClusterPrefixLength" id="ClusterPrefixLength" type="number" min="1" max="128"></div>
-<div class="form-group"><label for="ClusterSuffix">自定义 IPv6 后缀（如 ::1234）</label><input class="form-control" name="ClusterSuffix" id="ClusterSuffix"></div>
-<small class="text-muted">不启用时保持原有单机行为。下方获取方式用于本机上报 IP。每组在所有节点上填写相同调度节点 ID；前缀拼接只影响 IPv6，IPv4 仍取来源节点地址。节点独立域名在集群管理中设置。</small></div></div>
-
           <div class="portlet">
             <h5 data-i18n="DNS Provider" class="portlet__head" id="dnsProvider">DNS Provider</h5>
             <div class="portlet__body">
@@ -157,6 +145,14 @@
             </div>
           </div>
 
+<section><h4>IPv4</h4><div id="nodeNetworks4"></div></section>
+<section><h4>IPv6</h4><div id="nodeNetworks6"></div>
+<div class="portlet"><h5 class="portlet__head">自定义 IP 后缀</h5><div class="portlet__body">
+<label><input type="checkbox" id="suffixEnabled"> 是否启用</label>
+<div id="suffixBody"><label for="suffixIPs">IP</label><textarea class="form-control" id="suffixIPs" rows="3" placeholder="::1000&#10;::1001"></textarea><small class="form-text text-muted">整个 IPv6 配置共用一份后缀列表，按上方各节点的 IPv6 域名顺序逐行对应。空行或未填写的行使用节点原后缀。单段最多四位十六进制数。</small></div>
+</div></div></section>
+<div class="form-group"><label for="addNetworkNode">添加节点网络配置</label><select id="addNetworkNode" class="form-control"></select><button type="button" id="addNetwork" class="btn btn-secondary btn-sm mt-2">添加节点</button><small class="form-text text-muted">节点的地址与令牌在“集群管理”维护；此处的网络设置及账号密码会同步到全部节点。多节点配置必须属于同一 IPv6 前缀变化域。</small></div>
+<template id="networkTemplate"><section class="node-network"><div class="d-flex justify-content-between align-items-center my-3"><h5 class="node-name"></h5><button type="button" class="remove-network btn btn-outline-danger btn-sm">移除此节点</button></div>
           <div class="portlet">
             <h5 class="portlet__head">IPv4</h5>
             <div class="portlet__body">
@@ -292,6 +288,7 @@
               </div>
             </div>
           </div>
+</section></template>
         </form>
 
         <form id="formGlobal">
@@ -390,6 +387,7 @@
     </div>
   </main>
 
+<script src="./static/session.js"></script>
 </body>
 
 <script>
@@ -409,9 +407,12 @@
     WebhookRequestBody: document.getElementById("WebhookRequestBody").value,
     WebhookHeaders: document.getElementById("WebhookHeaders").value,
   };
-  const defaultDnsConf = {
+  const clusterNodes = {{.ClusterNodes}};
+ const localNodeID={{.LocalID}};
+ const defaultDnsConf = {
+ Networks: [],
  ID: "",
- Cluster: {Enabled:false,Group:"",NodeIDs:{{.LocalID}},Coordinator:{{.LocalID}},Source:"node",SourceNode:{{.LocalID}},Algorithm:"random",PrefixLength:64,Suffix:""},
+ Cluster: {Enabled:false,Group:"",NodeIDs:{{.LocalID}},Source:"node",SourceNode:"local",Algorithm:"random",PrefixLength:64,CooldownSeconds:60,Suffix:""},
     Name: "",
     DnsID: "",
     DnsName: "alidns",
@@ -441,6 +442,7 @@
   };
 </script>
 
+<script src="./static/node-networks.js"></script>
 <!-- 表单相关 -->
 <script>
   // 生成DNS选择项
@@ -500,13 +502,13 @@
     switch ($e.getAttribute("type")) {
       case "checkbox":
         $e.addEventListener('change', e => {
-          if (name.startsWith("Cluster")) { dnsConf[configIndex].Cluster[name.slice(7)] = e.target.checked; } else { dnsConf[configIndex][name] = e.target.checked; }
+          dnsConf[configIndex][name] = e.target.checked;
         });
         break;
       // 如果是其它类型的input或者不是input（如textarea、select），都可以使用input事件监听
       default:
         $e.addEventListener('input', e => {
-          if (name.startsWith("Cluster")) { dnsConf[configIndex].Cluster[name.slice(7)] = name === "ClusterPrefixLength" ? Number(e.target.value) : e.target.value; } else { dnsConf[configIndex][name] = e.target.value; }
+          dnsConf[configIndex][name] = e.target.value;
         });
         break;
     }
@@ -553,13 +555,13 @@
 <!-- 配置项 -->
 <script>
   // 不需要填充到表单中的字段
-  const SKIPPED_NAMES = ["ID", "Name", "Cluster"];
+  const SKIPPED_NAMES = ["ID", "Name", "Cluster", "Networks", "IPv6Suffix"];
 
   // 把dnsConf中的值填充到表单中
   function showConf(idx) {
     const conf = dnsConf[idx] ?? {};
  conf.Cluster = {...defaultDnsConf.Cluster, ...conf.Cluster};
- document.querySelectorAll("#formDnsConf [name^=Cluster]").forEach(input=>{ const value=conf.Cluster[input.name.slice(7)]; if(input.type === "checkbox") input.checked=value; else input.value=value; });
+ renderNodeNetworks(conf);
     for (const name in conf) {
       if (SKIPPED_NAMES.includes(name)) {
         continue;
@@ -914,88 +916,7 @@
     }
   });
 
-  // 测试正则表达式
-  const $ipv6Reg = document.getElementById("Ipv6Reg");
-  const ipv6RegTooltip = new Tooltip($ipv6Reg, ['manual', 'focus']);
-  // ipv6网卡信息
-  const $ipv6NetInterface = document.getElementById("Ipv6NetInterface");
-  const ipv6Dict = Array.from($ipv6NetInterface.options).reduce((acc, option) => {
-    // 支持 IPv4-mapped IPv6，例如 ::ffff:192.168.1.102
-    const ipv6s = option.innerText.match(/([0-9a-fA-F:.]{2,})/g);
-    if (ipv6s) {
-      acc[option.value] = ipv6s;
-    }
-    return acc;
-  }, {});
-  $ipv6Reg.addEventListener('input', e => {
-    // 为空时不处理
-    if (!$ipv6Reg.value) {
-      ipv6RegTooltip.hide();
-      return;
-    }
-    const curIpv6s = ipv6Dict[$ipv6NetInterface.value] || [];
-    // 指定第N个ipv6地址
-    const ipv6IndexMatch = $ipv6Reg.value.match(/^@(\d+)$/);
-    if (ipv6IndexMatch) {
-      const idx = parseInt(ipv6IndexMatch[1]) - 1;
-      if (idx < 0 || idx >= curIpv6s.length) {
-        ipv6RegTooltip.show({
-          title: i18n({
-            "en": "<span style='color: red'>Index out of range</span>",
-            "zh-cn": "<span style='color: red'>索引超出范围</span>",
-          }),
-          html: true,
-          placement: "top",
-        });
-        return;
-      }
-      ipv6RegTooltip.show({
-        title: i18n({
-          "en": `Matched: ${curIpv6s[idx]}`,
-          "zh-cn": `匹配到: ${curIpv6s[idx]}`,
-        }),
-        placement: "top",
-      });
-      return;
-    }
-
-    // 检测正则表达式是否合法
-    let reg;
-    try {
-      reg = new RegExp($ipv6Reg.value);
-    } catch (err) {
-      ipv6RegTooltip.show({
-        title: i18n({
-          "en": "<span style='color: red'>Invalid regular expression</span>",
-          "zh-cn": "<span style='color: red'>无效的正则表达式</span>",
-        }),
-        html: true,
-        placement: "top",
-      });
-      return;
-    }
-    // 显示正则表达式的匹配结果
-    for (const ipv6 of curIpv6s) {
-      if (reg.test(ipv6)) {
-        ipv6RegTooltip.show({
-          title: i18n({
-            "en": `Matched: ${ipv6}`,
-            "zh-cn": `匹配到: ${ipv6}`,
-          }),
-          placement: "top",
-        });
-        return;
-      }
-    }
-    ipv6RegTooltip.show({
-      title: i18n({
-        "en": "<span style='color: red'>No match found</span>",
-        "zh-cn": "<span style='color: red'>无匹配项</span>",
-      }),
-      html: true,
-      placement: "top",
-    });
-  });
 </script>
+
 
 </html>

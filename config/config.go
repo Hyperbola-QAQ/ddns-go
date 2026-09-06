@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -32,29 +33,16 @@ var Ipv6Reg = regexp.MustCompile(`([0-9A-Fa-f:.]{2,})`)
 
 // DnsConfig 配置
 type DnsConfig struct {
-	ID       string // stable local identity for edits and audit history
-	Name     string
-	Cluster  ClusterPolicy
-	Resolved *ResolvedIP `yaml:"-" json:"-"`
-	Ipv4     struct {
-		Enable bool
-		// 获取IP类型 url/netInterface
-		GetType      string
-		URL          string
-		NetInterface string
-		Cmd          string
-		Domains      []string
-	}
-	Ipv6 struct {
-		Enable bool
-		// 获取IP类型 url/netInterface
-		GetType      string
-		URL          string
-		NetInterface string
-		Cmd          string
-		Ipv6Reg      string // ipv6匹配正则表达式
-		Domains      []string
-	}
+	RequestContext context.Context `yaml:"-" json:"-"`
+	ID             string          // stable local identity for edits and audit history
+	Name           string
+	Cluster        ClusterPolicy
+	Resolved       *ResolvedIP `yaml:"-" json:"-"`
+	Ipv4           IPConfig
+	Ipv6           IPConfig
+	Networks       []NodeNetwork
+	IPv6Suffix     *SuffixConfig
+
 	DNS DNS
 	TTL string
 	// 发送HTTP请求时使用的网卡名称，为空则使用默认网卡
@@ -88,7 +76,7 @@ type AuditSettings struct {
 	DSN    string
 }
 
-// ResolvedIP is internal-only: peers never supply executable IP acquisition settings.
+// ResolvedIP bypasses acquisition when the executor already has the selected address.
 type ResolvedIP struct {
 	IPv4 string
 	IPv6 string
@@ -202,7 +190,14 @@ func (conf *Config) SaveConfig() (err error) {
 		return err
 	}
 
+	var verified Config
+	if err = yaml.Unmarshal(byt, &verified); err != nil {
+		return err
+	}
 	configFilePath := util.GetConfigFilePath()
+	if err = os.MkdirAll(filepath.Dir(configFilePath), 0700); err != nil {
+		return err
+	}
 	err = os.WriteFile(configFilePath, byt, 0600)
 	if err != nil {
 		log.Println(err)
@@ -475,7 +470,17 @@ func (conf *DnsConfig) GetIpv6Addr() (result string) {
 
 // GetHTTPClient 获得HTTP客户端，如果配置了HttpInterface则绑定到指定网卡
 func (conf *DnsConfig) GetHTTPClient() *http.Client {
-	return util.CreateHTTPClientWithInterface(conf.HttpInterface)
+	client := util.CreateHTTPClientWithInterface(conf.HttpInterface)
+	if conf.RequestContext != nil {
+		copy := *client
+		transport := client.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		copy.Transport = contextTransport{transport, conf.RequestContext}
+		return &copy
+	}
+	return client
 }
 
 // Return independent snapshots to keep background updates and Web edits race-free.
@@ -483,8 +488,26 @@ func cloneConfig(c Config) Config {
 	c.Cluster.Nodes = append([]ClusterNode(nil), c.Cluster.Nodes...)
 	c.DnsConf = append([]DnsConfig(nil), c.DnsConf...)
 	for i := range c.DnsConf {
+		if c.DnsConf[i].IPv6Suffix != nil {
+			v := *c.DnsConf[i].IPv6Suffix
+			c.DnsConf[i].IPv6Suffix = &v
+		}
+		c.DnsConf[i].Networks = append([]NodeNetwork(nil), c.DnsConf[i].Networks...)
+		for j := range c.DnsConf[i].Networks {
+			c.DnsConf[i].Networks[j].Ipv4.Domains = append([]string(nil), c.DnsConf[i].Networks[j].Ipv4.Domains...)
+			c.DnsConf[i].Networks[j].Ipv6.Domains = append([]string(nil), c.DnsConf[i].Networks[j].Ipv6.Domains...)
+		}
 		c.DnsConf[i].Ipv4.Domains = append([]string(nil), c.DnsConf[i].Ipv4.Domains...)
 		c.DnsConf[i].Ipv6.Domains = append([]string(nil), c.DnsConf[i].Ipv6.Domains...)
 	}
 	return c
+}
+
+type contextTransport struct {
+	base http.RoundTripper
+	ctx  context.Context
+}
+
+func (t contextTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return t.base.RoundTrip(r.WithContext(t.ctx))
 }

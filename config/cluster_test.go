@@ -51,3 +51,60 @@ func TestSnapshotIsolation(t *testing.T) {
 		t.Fatal("snapshot aliases cache")
 	}
 }
+
+func TestNodeNetworkSuffixValidationAndClone(t *testing.T) {
+	c := Config{Cluster: ClusterSettings{LocalID: "self"}, DnsConf: []DnsConfig{{ID: "g", Networks: []NodeNetwork{{NodeID: "self", Ipv6: IPConfig{Enable: true, GetType: "cmd", Domains: []string{"a.example.com", "b.example.com"}}, Suffixes: "\n::1000"}}}}}
+	c.ClusterDefaults()
+	if err := c.ValidateCluster(); err != nil {
+		t.Fatal("blank first suffix rejected", err)
+	}
+	copy := cloneConfig(c)
+	copy.DnsConf[0].Networks[0].Ipv6.Domains[0] = "other.example.com"
+	if c.DnsConf[0].Networks[0].Ipv6.Domains[0] != "a.example.com" {
+		t.Fatal("network snapshot shares domain slice")
+	}
+	c.DnsConf[0].Networks[0].Suffixes = "::10001"
+	if err := c.ValidateCluster(); err == nil {
+		t.Fatal("invalid five-digit IPv6 segment accepted")
+	}
+}
+
+func TestNodeNetworkSuffixYAMLRoundTrip(t *testing.T) {
+	for _, suffix := range []string{"\n::1000", "::1\n::1000", "::1\n", ""} {
+		c := Config{DnsConf: []DnsConfig{{Networks: []NodeNetwork{{NodeID: "a", Suffixes: suffix}}}}}
+		raw, err := yaml.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var saved Config
+		if err := yaml.Unmarshal(raw, &saved); err != nil {
+			t.Fatalf("saved YAML cannot be loaded: %v", err)
+		}
+		if saved.DnsConf[0].Networks[0].Suffixes != suffix {
+			t.Fatal("suffix blank lines lost")
+		}
+	}
+}
+
+func TestGlobalSuffixYAMLAndValidation(t *testing.T) {
+	c := Config{Cluster: ClusterSettings{LocalID: "a"}, DnsConf: []DnsConfig{{ID: "g", IPv6Suffix: &SuffixConfig{Enable: true, IPs: "\n::1000"}, Networks: []NodeNetwork{{NodeID: "a", Ipv6: IPConfig{Domains: []string{"a.example.com", "b.example.com"}}}}}}}
+	c.ClusterDefaults()
+	if err := c.ValidateCluster(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved Config
+	if err := yaml.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.DnsConf[0].IPv6Suffix.IPs != "\n::1000" {
+		t.Fatal("global suffix line order lost")
+	}
+	c.DnsConf[0].IPv6Suffix.IPs = "::1\n::2\n::3"
+	if err := c.ValidateCluster(); err == nil {
+		t.Fatal("too many suffixes accepted")
+	}
+}

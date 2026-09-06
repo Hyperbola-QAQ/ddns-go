@@ -3,10 +3,10 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/jeessy2/ddns-go/v6/config"
-	"github.com/jeessy2/ddns-go/v6/dns"
 	"github.com/jeessy2/ddns-go/v6/util"
 )
 
@@ -83,10 +83,10 @@ func checkAndSave(request *http.Request) string {
 	var dnsConfArray []config.DnsConfig
 	empty := dnsConf4JS{}
 	for k, v := range dnsConfFromJS {
-		if v == empty {
+		if reflect.DeepEqual(v, empty) {
 			continue
 		}
-		dnsConf := config.DnsConfig{ID: v.ID, Name: v.Name, TTL: v.TTL, Cluster: v.Cluster}
+		dnsConf := config.DnsConfig{ID: v.ID, Name: v.Name, TTL: v.TTL, Cluster: v.Cluster, Networks: v.Networks, IPv6Suffix: v.IPv6Suffix}
 		// 覆盖以前的配置
 		dnsConf.DNS.Name = v.DnsName
 		dnsConf.DNS.ID = strings.TrimSpace(v.DnsID)
@@ -146,15 +146,16 @@ func checkAndSave(request *http.Request) string {
 	}
 
 	// 保存到用户目录
+	bumpClusterVersion(&conf)
 	err = conf.SaveConfig()
 
 	if err != nil {
 		return err.Error()
 	}
+	queueClusterSync()
 	auditConfigChanges(request, old, conf)
 
 	// 只运行一次
-	dns.RequestRun()
 
 	return "ok"
 }

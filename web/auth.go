@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jeessy2/ddns-go/v6/config"
@@ -16,7 +17,7 @@ func Auth(f ViewFunc) ViewFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookieInWeb, err := r.Cookie(cookieName)
 		if err != nil {
-			http.Redirect(w, r, "./login", http.StatusTemporaryRedirect)
+			requireLogin(w, r)
 			return
 		}
 
@@ -33,16 +34,18 @@ func Auth(f ViewFunc) ViewFunc {
 
 		// 验证token
 		sessionMu.RLock()
-		cookie := *cookieInSystem
+		cookie := sessions[cookieInWeb.Value]
+		lease := loginLease
+		seen := sessionSeen[cookieInWeb.Value]
 		sessionMu.RUnlock()
-		if cookie.Value != "" &&
+		if lease.Valid() && time.Since(seen) < 45*time.Second && cookie.Value != "" &&
 			cookie.Value == cookieInWeb.Value &&
 			cookie.Expires.After(time.Now()) {
 			f(w, r) // 执行被装饰的函数
 			return
 		}
 
-		http.Redirect(w, r, "./login", http.StatusTemporaryRedirect)
+		requireLogin(w, r)
 	}
 }
 
@@ -72,4 +75,12 @@ func AuthAssert(f ViewFunc) ViewFunc {
 		f(w, r) // 执行被装饰的函数
 
 	}
+}
+
+func requireLogin(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/cluster/") || strings.HasPrefix(r.URL.Path, "/audit/") {
+		http.Error(w, "请重新登录", http.StatusUnauthorized)
+		return
+	}
+	http.Redirect(w, r, "./login", http.StatusTemporaryRedirect)
 }

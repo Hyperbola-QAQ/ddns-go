@@ -1,6 +1,8 @@
 package web
 
 import (
+	"context"
+	"crypto/rand"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -24,7 +26,8 @@ const cookieName = "token"
 // CookieInSystem only one cookie
 var sessionMu sync.RWMutex
 
-var cookieInSystem = &http.Cookie{}
+var sessions = map[string]http.Cookie{}
+var sessionSeen = map[string]time.Time{}
 
 // 服务启动时间
 var startTime = time.Now()
@@ -122,15 +125,32 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		conf.Password = hashedPwd
+		conf.ClusterDefaults()
+		bumpClusterVersion(&conf)
 		if err := conf.SaveConfig(); err != nil {
 			returnError(w, "保存账户失败")
 			return
 		}
+		queueClusterSync()
 		recordChange(r, conf, "account.create", "", conf.Cluster.LocalID, nil, conf.Username)
 	}
 
 	// 登录
 	if data.Username == conf.Username && util.PasswordOK(conf.Password, data.Password) {
+		conf.ClusterDefaults()
+		sessionMu.RLock()
+		lease := loginLease
+		sessionMu.RUnlock()
+		newLease := lease == nil || !lease.Valid()
+		if newLease {
+			ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+			lease, err = acquireLogin(ctx, conf)
+			cancel()
+			if err != nil {
+				returnError(w, "其他节点已登录或集群节点不可达，请退出其他节点后重试")
+				return
+			}
+		}
 		ld.ticker.Stop()
 		ld.failedTimes = 0
 
@@ -141,18 +161,18 @@ func LoginFunc(w http.ResponseWriter, r *http.Request) {
 			timeoutDays = 30
 		}
 
-		// 覆盖cookie
 		sessionMu.Lock()
-		cookieInSystem = &http.Cookie{
-			Name:     cookieName,
-			Value:    util.GenerateToken(data.Username), // 生成token
-			Path:     "/",
-			Expires:  time.Now().AddDate(0, 0, timeoutDays), // 设置过期时间
-			HttpOnly: true,
+		if newLease {
+			sessions = map[string]http.Cookie{}
+			sessionSeen = map[string]time.Time{}
 		}
-		// 写入cookie
-		http.SetCookie(w, cookieInSystem)
-		token := cookieInSystem.Value
+		pruneSessions(time.Now())
+		loginLease = lease
+		cookie := http.Cookie{Name: cookieName, Value: rand.Text(), Path: "/", Expires: time.Now().AddDate(0, 0, timeoutDays), HttpOnly: true, SameSite: http.SameSiteLaxMode}
+		sessions[cookie.Value] = cookie
+		sessionSeen[cookie.Value] = time.Now()
+		http.SetCookie(w, &cookie)
+		token := cookie.Value
 		sessionMu.Unlock()
 		audit.Record(audit.Event{Actor: conf.Username, Host: util.GetRequestIPStr(r), Operation: "login", Node: conf.Cluster.LocalID, Result: "ok"})
 
@@ -182,4 +202,26 @@ func loginUnlock() {
 		}
 	}(ld.ticker)
 
+}
+
+func invalidateSessions() {
+	sessionMu.Lock()
+	sessions = map[string]http.Cookie{}
+	sessionSeen = map[string]time.Time{}
+	lease := loginLease
+	loginLease = nil
+	sessionMu.Unlock()
+	if lease != nil {
+		go lease.Release()
+	}
+}
+
+// Called under sessionMu; closing the last active page eventually releases occupancy.
+func pruneSessions(now time.Time) {
+	for token, cookie := range sessions {
+		if !cookie.Expires.After(now) || now.Sub(sessionSeen[token]) >= 45*time.Second {
+			delete(sessions, token)
+			delete(sessionSeen, token)
+		}
+	}
 }

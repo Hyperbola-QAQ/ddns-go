@@ -49,12 +49,12 @@ func TestPingAndPeerAuth(t *testing.T) {
 		}
 	}
 }
-func TestClusterSettingsPreserveTokensAndRejectCSRF(t *testing.T) {
+func TestClusterSettingsShowTokensAndRejectCSRF(t *testing.T) {
 	c := setupCluster(t)
 	w := httptest.NewRecorder()
 	ClusterSettings(w, httptest.NewRequest("GET", "/cluster/settings", nil))
-	if strings.Contains(w.Body.String(), c.Cluster.Token) || strings.Contains(w.Body.String(), c.Cluster.Nodes[0].Token) {
-		t.Fatal("token leaked")
+	if !strings.Contains(w.Body.String(), c.Cluster.Token) || !strings.Contains(w.Body.String(), c.Cluster.Nodes[0].Token) {
+		t.Fatal("authenticated settings page cannot display tokens")
 	}
 	c.Cluster.Token = ""
 	c.Cluster.Nodes[0].Token = ""
@@ -94,13 +94,13 @@ func TestManagementTemplates(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	Writing(w, httptest.NewRequest("GET", "/", nil))
-	if !strings.Contains(w.Body.String(), "ClusterPrefixLength") || strings.Contains(w.Body.String(), "ZgotmplZ") {
+	if strings.Contains(w.Body.String(), "ClusterPrefixLength") || strings.Contains(w.Body.String(), "ZgotmplZ") {
 		t.Fatal("config template failed")
 	}
 }
 func TestDNSConfigJSONRoundTrip(t *testing.T) {
 	c := setupCluster(t)
-	d := config.DnsConfig{Name: "one", Cluster: config.ClusterPolicy{Enabled: true, Group: "g", NodeIDs: "self", Coordinator: "self", Source: "prefix", SourceNode: "self", Algorithm: "round-robin", PrefixLength: 57, Suffix: "::12"}}
+	d := config.DnsConfig{Name: "one", Cluster: config.ClusterPolicy{Enabled: true, Group: "g", NodeIDs: "self", Source: "prefix", SourceNode: "self", Algorithm: "round-robin", PrefixLength: 57, CooldownSeconds: 60, Suffix: "::12"}}
 	c.DnsConf = []config.DnsConfig{d}
 	if err := c.SaveConfig(); err != nil {
 		t.Fatal(err)
@@ -170,5 +170,30 @@ func TestDeletingEarlierConfigPreservesCredentialsAndAuditIdentity(t *testing.T)
 	}
 	if strings.Contains(events[0].Before, "first-secret") {
 		t.Fatal("audit leaked secret")
+	}
+}
+
+func TestNodeInterfacesReadsTargetNode(t *testing.T) {
+	c := setupCluster(t)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cluster/netinterfaces" || r.Header.Get("X-DDNS-Node") != "self" || r.Header.Get("Authorization") != "Bearer "+strings.Repeat("b", 32) {
+			t.Error("wrong peer request")
+		}
+		jsonResponse(w, map[string]any{"Ipv4": []config.NetInterface{{Name: "remote-eth", Address: []string{"192.0.2.2"}}}, "Ipv6": []config.NetInterface{{Name: "remote-eth", Address: []string{"2001:db8::2"}, Lifetimes: []config.AddressLifetime{{Known: true, ValidSeconds: 600}}}}})
+	}))
+	defer peer.Close()
+	c.Cluster.Nodes[0].URL = peer.URL
+	if err := c.SaveConfig(); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	NodeInterfaces(w, httptest.NewRequest("GET", "/cluster/interfaces?node=peer", nil))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "remote-eth") || !strings.Contains(w.Body.String(), "600") {
+		t.Fatal(w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	NodeInterfaces(w, httptest.NewRequest("GET", "/cluster/interfaces?node=unknown", nil))
+	if w.Code != 404 {
+		t.Fatal("unknown node accepted")
 	}
 }

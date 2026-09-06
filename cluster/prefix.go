@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/jeessy2/ddns-go/v6/config"
 )
@@ -60,12 +62,18 @@ func Compose(prefix, address string) (string, error) {
 }
 
 type State struct {
-	LayoutHash    string
-	Prefix        string
-	Addresses     map[string]string
-	Reports       map[string]string
-	PendingPrefix string
-	Pending       []Job
+	Version         config.SyncVersion
+	LastKey         string
+	LastAt          time.Time
+	LayoutHash      string
+	Prefix          string
+	PrefixAt        time.Time
+	Retired         map[string]time.Time
+	CooldownSeconds int
+	Addresses       map[string]string
+	Reports         map[string]string
+	PendingPrefix   string
+	Pending         []Job
 }
 
 // State is separate from user YAML so background updates cannot overwrite Web edits.
@@ -108,4 +116,87 @@ func SaveState(path string, s map[string]*State) error {
 		return err
 	}
 	return os.Rename(f.Name(), path)
+}
+
+var stateMu sync.Mutex
+
+// SaveGroup merges with the latest file so a peer cannot overwrite another group's state.
+func SaveGroup(path, group string, state *State) error {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	all, err := LoadState(path)
+	if err != nil {
+		return err
+	}
+	all[group] = state
+	return SaveState(path, all)
+}
+
+// CandidatePrefix accepts a new network immediately, but suppresses delayed returns
+// to retired networks. A persistent mixed-prefix group needs operator correction.
+func (s *State) CandidatePrefix(reports map[string]config.ResolvedIP, bits int, now time.Time) (string, error) {
+	prefixes := map[string]bool{}
+	for _, ip := range reports {
+		if ip.IPv6 != "" {
+			p, err := Prefix(ip.IPv6, bits)
+			if err != nil {
+				return "", err
+			}
+			prefixes[p] = true
+		}
+	}
+	candidates := map[string]bool{}
+	for p := range prefixes {
+		if p == s.Prefix {
+			continue
+		}
+		if until, old := s.Retired[p]; old {
+			if now.Before(until) {
+				continue
+			}
+			if len(prefixes) > 1 {
+				return "", errors.New("同一配置的 IPv6 前缀持续不一致，请检查节点网络；已暂停前缀更新")
+			}
+		}
+		candidates[p] = true
+	}
+	if len(candidates) > 1 {
+		return "", errors.New("同一配置的节点上报多个不同 IPv6 前缀，请确保属于同一前缀变化域")
+	}
+	for p := range candidates {
+		return p, nil
+	}
+	return s.Prefix, nil
+}
+func (s *State) CommitPrefix(prefix string, base int, now time.Time) {
+	if prefix == s.Prefix {
+		return
+	}
+	if base <= 0 {
+		base = 60
+	}
+	cooldown := base
+	if !s.PrefixAt.IsZero() && now.Sub(s.PrefixAt) < time.Duration(s.CooldownSeconds)*time.Second {
+		cooldown = s.CooldownSeconds * 2
+		if cooldown > base*4 {
+			cooldown = base * 4
+		}
+	}
+	if s.Retired == nil {
+		s.Retired = map[string]time.Time{}
+	}
+	if s.Prefix != "" {
+		s.Retired[s.Prefix] = now.Add(time.Duration(cooldown) * time.Second)
+	}
+	// Extend the recent-history window after rapid consecutive changes.
+	for p, until := range s.Retired {
+		if now.Before(until) {
+			s.Retired[p] = now.Add(time.Duration(cooldown) * time.Second)
+		} else if now.Sub(until) > 24*time.Hour {
+			delete(s.Retired, p)
+		}
+	}
+	s.Prefix = prefix
+	s.PrefixAt = now
+	s.CooldownSeconds = cooldown
 }

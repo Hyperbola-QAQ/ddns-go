@@ -20,6 +20,8 @@ const VersionEnv = "DDNS_GO_VERSION"
 // js中的dns配置
 type dnsConf4JS struct {
 	ID               string
+	Networks         []config.NodeNetwork
+	IPv6Suffix       *config.SuffixConfig
 	Cluster          config.ClusterPolicy
 	Name             string
 	DnsName          string
@@ -59,6 +61,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	conf.ClusterDefaults()
+	networkViews(&conf)
 	ipv4, ipv6, _ := config.GetNetInterface()
 
 	// 获取所有网卡（去重合并IPv4和IPv6网卡名称）
@@ -76,6 +79,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 
 	err = tmpl.Execute(writer, struct {
 		LocalID           string
+		ClusterNodes      template.JS
 		DnsConf           template.JS
 		NotAllowWanAccess bool
 		Username          string
@@ -87,6 +91,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 		AllInterfaces []config.NetInterface
 	}{
 		LocalID:           conf.Cluster.LocalID,
+		ClusterNodes:      nodeNamesJSON(conf),
 		DnsConf:           template.JS(getDnsConfStr(conf.DnsConf)),
 		NotAllowWanAccess: conf.NotAllowWanAccess,
 		Username:          conf.User.Username,
@@ -110,6 +115,8 @@ func getDnsConfStr(dnsConf []config.DnsConfig) string {
 		idHide, secretHide := getHideIDSecret(&conf)
 		dnsConfArray = append(dnsConfArray, dnsConf4JS{
 			ID:               conf.ID,
+			Networks:         conf.Networks,
+			IPv6Suffix:       conf.IPv6Suffix,
 			Name:             conf.Name,
 			Cluster:          conf.Cluster,
 			DnsName:          conf.DNS.Name,
@@ -153,4 +160,67 @@ func getHideIDSecret(conf *config.DnsConfig) (idHide string, secretHide string) 
 		secretHide = conf.DNS.Secret
 	}
 	return
+}
+
+func nodeNamesJSON(c config.Config) template.JS {
+	type node struct{ ID, Name string }
+	nodes := []node{}
+	self := false
+	for _, n := range c.Cluster.Nodes {
+		nodes = append(nodes, node{n.ID, n.Name})
+		if n.ID == c.Cluster.LocalID {
+			self = true
+		}
+	}
+	if !self {
+		nodes = append(nodes, node{c.Cluster.LocalID, "本机"})
+	}
+	b, _ := json.Marshal(nodes)
+	return template.JS(b)
+}
+
+// Migrate legacy forms on display; saving makes the node bindings explicit.
+func networkViews(c *config.Config) {
+	for i := range c.DnsConf {
+		d := &c.DnsConf[i]
+		if len(d.Networks) > 0 {
+			continue
+		}
+		ids := []string{c.Cluster.LocalID}
+		if d.Cluster.Enabled {
+			ids = d.Cluster.IDs()
+		}
+		source := d.Cluster.SourceNode
+		if source == "local" || source == "" || d.Cluster.Source == "auto" {
+			source = c.Cluster.LocalID
+		}
+		for _, id := range ids {
+			n := config.NodeNetwork{NodeID: id, Ipv4: d.Ipv4, Ipv6: d.Ipv6}
+			if id != source {
+				n.Ipv4.Domains = nil
+				n.Ipv6.Domains = nil
+			}
+			node, _ := c.Node(id)
+			if d.Cluster.Enabled {
+				var suffixes []string
+				for range n.Ipv6.Domains {
+					suffix := ""
+					if d.Cluster.Source == "prefix" {
+						suffix = d.Cluster.Suffix
+					}
+					suffixes = append(suffixes, suffix)
+				}
+				for _, domain := range strings.Split(strings.ReplaceAll(node.IPv6Domains, "\r\n", "\n"), "\n") {
+					if strings.TrimSpace(domain) != "" {
+						n.Ipv6.Domains = append(n.Ipv6.Domains, domain)
+						suffixes = append(suffixes, node.Suffix)
+					}
+				}
+				if strings.TrimSpace(strings.Join(suffixes, "")) != "" {
+					n.Suffixes = strings.Join(suffixes, "\n")
+				}
+			}
+			d.Networks = append(d.Networks, n)
+		}
+	}
 }

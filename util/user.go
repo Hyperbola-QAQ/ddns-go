@@ -2,25 +2,40 @@ package util
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 )
 
 const ConfigFilePathENV = "DDNS_CONFIG_FILE_PATH"
 
-// GetConfigFilePath 获得配置文件路径
 func GetConfigFilePath() string {
-	configFilePath := os.Getenv(ConfigFilePathENV)
-	if configFilePath != "" {
-		return configFilePath
+	if p := os.Getenv(ConfigFilePathENV); p != "" {
+		return p
 	}
 	return GetConfigFilePathDefault()
 }
 
-// GetConfigFilePathDefault 获得默认的配置文件路径
 func GetConfigFilePathDefault() string {
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		// log.Println("Getting Home directory failed: ", err)
-		return "../.ddns_go_config.yaml"
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS != "linux" {
+		if home == "" {
+			return "../.ddns_go_config.yaml"
+		}
+		return filepath.Join(home, ".ddns_go_config.yaml")
 	}
-	return dir + string(os.PathSeparator) + ".ddns_go_config.yaml"
+	return configPath(home, "/etc/ddns-go", os.Geteuid() == 0)
+}
+func configPath(home, system string, root bool) string {
+	user := filepath.Join(home, ".config", "ddns-go", "config.yaml")
+	systemFile := filepath.Join(system, "config.yaml")
+	// Keep installed configurations and explicit -c / environment overrides working.
+	for _, p := range []string{user, systemFile, filepath.Join(home, ".ddns_go_config.yaml")} {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	if root || home == "" {
+		return systemFile
+	}
+	return user
 }

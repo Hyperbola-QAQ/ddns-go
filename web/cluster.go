@@ -16,7 +16,6 @@ import (
 	"github.com/jeessy2/ddns-go/v6/audit"
 	"github.com/jeessy2/ddns-go/v6/cluster"
 	"github.com/jeessy2/ddns-go/v6/config"
-	"github.com/jeessy2/ddns-go/v6/dns"
 	"github.com/jeessy2/ddns-go/v6/util"
 )
 
@@ -79,8 +78,12 @@ func ClusterIP(w http.ResponseWriter, r *http.Request) {
 	}
 	c, _ := config.GetConfigCached()
 	d, ok := groupConfig(c, r.URL.Query().Get("group"))
-	if !ok || d.Cluster.Coordinator != r.Header.Get("X-DDNS-Node") {
+	if !ok || !cluster.IsMember(d.Cluster, r.Header.Get("X-DDNS-Node")) {
 		http.Error(w, "group not available", 403)
+		return
+	}
+	if layout := r.URL.Query().Get("layout"); layout != "" && layout != cluster.LayoutHash(c, d) {
+		http.Error(w, "配置同步尚未完成", 409)
 		return
 	}
 	n, _ := c.Node(c.Cluster.LocalID)
@@ -91,40 +94,30 @@ func ClusterIP(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, ip)
 }
-func ClusterUpdate(w http.ResponseWriter, r *http.Request) {
-	if !jsonMutation(w, r) {
-		return
-	}
-	var in cluster.UpdateRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
-		http.Error(w, "invalid JSON", 400)
-		return
-	}
-	c, _ := config.GetConfigCached()
-	d, ok := groupConfig(c, in.Group)
-	if !ok || d.Cluster.Coordinator != r.Header.Get("X-DDNS-Node") {
-		http.Error(w, "group not available", 403)
-		return
-	}
-	if err := dns.ExecuteCluster(c, d, in, r.Header.Get("X-DDNS-Node")); err != nil {
-		jsonResponse(w, map[string]string{"Status": "failed", "Error": err.Error()})
-		return
-	}
-	jsonResponse(w, map[string]string{"Status": "ok"})
+
+type clusterPolicyView struct {
+	ID, Name string
+	Cluster  config.ClusterPolicy
 }
+
+func policyViews(c config.Config) []clusterPolicyView {
+	var out []clusterPolicyView
+	for _, d := range c.DnsConf {
+		out = append(out, clusterPolicyView{d.ID, d.DisplayName(), d.Cluster})
+	}
+	return out
+}
+
 func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		c, _ := config.GetConfigCached()
 		c.ClusterDefaults()
-		// Tokens are write-only; a blank field on save keeps the existing token.
-		c.Cluster.Token = ""
-		for i := range c.Cluster.Nodes {
-			c.Cluster.Nodes[i].Token = ""
-		}
 		jsonResponse(w, struct {
-			Cluster config.ClusterSettings
-			Audit   config.AuditSettings
-		}{c.Cluster, c.Audit})
+			Cluster    config.ClusterSettings
+			Audit      config.AuditSettings
+			Policies   []clusterPolicyView
+			SyncErrors map[string]string
+		}{c.Cluster, c.Audit, policyViews(c), clusterSyncErrors()})
 		return
 	}
 	if !jsonMutation(w, r) {
@@ -133,8 +126,9 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 	config.EditMu.Lock()
 	defer config.EditMu.Unlock()
 	var in struct {
-		Cluster config.ClusterSettings
-		Audit   config.AuditSettings
+		Cluster  config.ClusterSettings
+		Audit    config.AuditSettings
+		Policies []clusterPolicyView
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
 		http.Error(w, "invalid JSON", 400)
@@ -168,17 +162,35 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	in.Cluster.Version = c.Cluster.Version
 	c.Cluster = in.Cluster
+	for _, v := range in.Policies {
+		found := false
+		for i := range c.DnsConf {
+			if c.DnsConf[i].ID == v.ID {
+				c.DnsConf[i].Cluster = v.Cluster
+				found = true
+				break
+			}
+		}
+		if !found {
+			http.Error(w, "配置已改变，请刷新页面", 409)
+			return
+		}
+	}
 	c.Audit = in.Audit
 	c.ClusterDefaults()
 	if err := c.ValidateCluster(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	bumpClusterVersion(&c)
 	if err := c.SaveConfig(); err != nil {
 		http.Error(w, "保存失败", 500)
 		return
 	}
+	queueClusterSync()
+	auditConfigChanges(r, old, c)
 	for _, n := range old.Cluster.Nodes {
 		next, ok := c.Node(n.ID)
 		if !ok {
@@ -204,7 +216,6 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 	if old.Audit != c.Audit {
 		recordChange(r, c, "audit.settings", "", "", old.Audit.Driver, c.Audit.Driver)
 	}
-	dns.RequestRun()
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 func redactNode(n config.ClusterNode) config.ClusterNode { n.Token = "[redacted]"; return n }
@@ -214,6 +225,13 @@ func recordChange(r *http.Request, c config.Config, op, name, node string, befor
 	audit.Record(audit.Event{Actor: c.Username, Host: util.GetRequestIPStr(r), Operation: op, Config: name, Node: node, Before: string(b), After: string(a), Result: "ok"})
 }
 func redactDNS(d config.DnsConfig) config.DnsConfig {
+	d.Networks = append([]config.NodeNetwork(nil), d.Networks...)
+	for i := range d.Networks {
+		d.Networks[i].Ipv4.Cmd = "[redacted]"
+		d.Networks[i].Ipv4.URL = "[redacted]"
+		d.Networks[i].Ipv6.Cmd = "[redacted]"
+		d.Networks[i].Ipv6.URL = "[redacted]"
+	}
 	d.DNS.ID = "[redacted]"
 	d.DNS.Secret = "[redacted]"
 	d.DNS.ExtParam = "[redacted]"

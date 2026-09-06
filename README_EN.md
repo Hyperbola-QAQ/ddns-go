@@ -169,4 +169,4 @@ Automatically obtain your public IPv4 or IPv6 address and resolve it to the corr
 
 ## Distributed cluster
 
-Opt-in cluster configuration adds node health checks, remote DNS execution, IPv6 prefix propagation, and asynchronous auditing. See the [cluster guide (Chinese)](docs/distributed-cluster.md) for setup and operational limitations.
+Opt-in cluster configuration adds node health checks, decentralized local DNS execution, IPv6 prefix propagation, and asynchronous auditing. See the [cluster guide (Chinese)](README.md) for setup and operational limitations.

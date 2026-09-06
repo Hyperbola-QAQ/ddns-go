@@ -19,15 +19,16 @@ func RegisterClusterAlgorithm(name string) { clusterAlgorithms.Store(name, true)
 
 // ClusterPolicy is opt-in; an absent policy preserves the single-node updater.
 type ClusterPolicy struct {
-	Enabled      bool
-	Group        string
-	NodeIDs      string // comma-separated stable IDs, not display names
-	Coordinator  string
-	Source       string // node, auto, prefix
-	SourceNode   string
-	Algorithm    string // random, round-robin
-	PrefixLength int
-	Suffix       string
+	Enabled         bool
+	Group           string
+	NodeIDs         string // comma-separated stable IDs, not display names
+	Coordinator     string `yaml:"coordinator,omitempty" json:"-"` // read old files; no scheduling authority
+	Source          string // node, auto, prefix
+	SourceNode      string
+	Algorithm       string // random, round-robin
+	PrefixLength    int
+	CooldownSeconds int
+	Suffix          string
 }
 
 type ClusterNode struct {
@@ -44,6 +45,18 @@ type ClusterSettings struct {
 	LocalID string
 	Token   string // inbound peer token, independent of the Web login
 	Nodes   []ClusterNode
+	Version SyncVersion
+}
+
+// SyncVersion is a logical clock; concurrent versions use node ID as a deterministic tie-break.
+type SyncVersion struct {
+	Counter uint64
+	Node    string
+	Actor   string
+}
+
+func (v SyncVersion) Newer(other SyncVersion) bool {
+	return v.Counter > other.Counter || (v.Counter == other.Counter && v.Node > other.Node)
 }
 
 func (p ClusterPolicy) IDs() []string {
@@ -61,7 +74,7 @@ func (p *ClusterPolicy) Defaults(local string) {
 		p.Source = "node"
 	}
 	if p.SourceNode == "" {
-		p.SourceNode = local
+		p.SourceNode = "local"
 	}
 	if p.Algorithm == "" {
 		p.Algorithm = "random"
@@ -69,9 +82,10 @@ func (p *ClusterPolicy) Defaults(local string) {
 	if p.PrefixLength == 0 {
 		p.PrefixLength = 64
 	}
-	if p.Coordinator == "" {
-		p.Coordinator = local
+	if p.CooldownSeconds == 0 {
+		p.CooldownSeconds = 60
 	}
+	p.Coordinator = ""
 	if p.NodeIDs == "" {
 		p.NodeIDs = local
 	}
@@ -138,6 +152,12 @@ func (c Config) ValidateCluster() error {
 	groups := map[string]bool{}
 	for _, d := range c.DnsConf {
 		p := d.Cluster
+		if err := d.ValidateNetworks(c); err != nil {
+			return err
+		}
+		if p.CooldownSeconds < 0 || p.CooldownSeconds > 3600 {
+			return errors.New("前缀冷却时间须为 1–3600 秒，0 使用默认 60 秒")
+		}
 		if !p.Enabled {
 			continue
 		}
@@ -156,7 +176,11 @@ func (c Config) ValidateCluster() error {
 		}
 		members := map[string]bool{}
 		domains := map[string]bool{}
-		for _, domain := range d.Ipv6.Domains {
+		legacyDomains := d.Ipv6.Domains
+		if len(d.Networks) > 0 {
+			legacyDomains = nil
+		}
+		for _, domain := range legacyDomains {
 			if strings.TrimSpace(domain) == "" {
 				continue
 			}
@@ -198,10 +222,12 @@ func (c Config) ValidateCluster() error {
 				domains[key] = true
 			}
 		}
-		if !members[p.Coordinator] {
-			return errors.New("调度节点必须属于当前配置关联节点")
+
+		source := p.SourceNode
+		if source == "local" {
+			source = c.Cluster.LocalID
 		}
-		if p.Source != "auto" && !members[p.SourceNode] {
+		if p.Source != "auto" && p.SourceNode != "local" && !members[source] {
 			return errors.New("IP 来源节点必须属于当前配置关联节点")
 		}
 		if p.Source == "prefix" {

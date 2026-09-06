@@ -48,7 +48,7 @@ var ipCacheTimes = flag.Int("cacheTimes", 5, "Cache times")
 var serviceType = flag.String("s", "", "Service management (install|uninstall|restart)")
 
 // 配置文件路径
-var configFilePath = flag.String("c", util.GetConfigFilePathDefault(), "Custom configuration file path")
+var configFilePath = flag.String("c", util.GetConfigFilePath(), "Custom configuration file path")
 
 // Web 服务
 var noWebService = flag.Bool("noweb", false, "No web service")
@@ -197,6 +197,8 @@ func run() {
 		}()
 	}
 
+	go web.RunClusterSync()
+
 	// 初始化备用DNS
 	util.InitBackupDNS(*customDNS, conf.Lang)
 
@@ -219,8 +221,13 @@ func runWebServer() error {
 	http.HandleFunc("/ping", web.Ping)
 	http.HandleFunc("/cluster", web.Auth(web.ManagementPage))
 	http.HandleFunc("/cluster/settings", web.Auth(web.ClusterSettings))
+	http.HandleFunc("/cluster/interfaces", web.Auth(web.NodeInterfaces))
+	http.HandleFunc("/cluster/netinterfaces", web.PeerAuth(web.ClusterNetInterfaces))
 	http.HandleFunc("/cluster/ip", web.PeerAuth(web.ClusterIP))
-	http.HandleFunc("/cluster/update", web.PeerAuth(web.ClusterUpdate))
+	http.HandleFunc("/cluster/claim", web.PeerAuth(web.ClusterClaim))
+	http.HandleFunc("/cluster/state", web.PeerAuth(web.ClusterState))
+	http.HandleFunc("/cluster/sync", web.PeerAuth(web.ClusterSync))
+	http.HandleFunc("/cluster/session/keepalive", web.Auth(web.SessionKeepalive))
 	http.HandleFunc("/audit", web.Auth(web.ManagementPage))
 	http.HandleFunc("/audit/events", web.Auth(web.AuditEvents))
 	// 启动静态文件服务

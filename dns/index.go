@@ -3,6 +3,8 @@ package dns
 import (
 	"encoding/json"
 	"github.com/jeessy2/ddns-go/v6/audit"
+	"github.com/jeessy2/ddns-go/v6/cluster"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,16 +86,31 @@ func RunOnce() {
 	}
 
 	for i, dc := range conf.DnsConf {
+		if !dc.Cluster.Enabled {
+			for _, network := range dc.Networks {
+				if (dc.IPv6Suffix != nil && dc.IPv6Suffix.Enable) || (dc.IPv6Suffix == nil && strings.TrimSpace(network.Suffixes) != "") {
+					dc.Cluster.Enabled = true
+					if dc.Cluster.Group == "" {
+						dc.Cluster.Group = dc.ID
+					}
+					dc.Cluster.NodeIDs = conf.Cluster.LocalID
+					conf.DnsConf[i] = dc
+					break
+				}
+			}
+		}
+
 		if dc.Cluster.Enabled {
-			if dc.Cluster.Coordinator == conf.Cluster.LocalID {
+			if cluster.IsMember(dc.Cluster, conf.Cluster.LocalID) {
 				if err := runCluster(conf, dc); err != nil {
-					util.Log("集群配置 %s 更新失败: %s", dc.Name, err)
+					util.Log("集群配置 %s 更新失败: %s", dc.DisplayName(), err)
 				}
 			}
 			continue
 		}
 		updateMu.Lock()
 		previous, _ := json.Marshal(config.ResolvedIP{IPv4: Ipcache[i][0].Addr, IPv6: Ipcache[i][1].Addr})
+		dc = dc.ForNode(conf.Cluster.LocalID)
 		dnsSelected := newProvider(dc.DNS.Name)
 		dnsSelected.Init(&dc, &Ipcache[i][0], &Ipcache[i][1])
 		domains := dnsSelected.AddUpdateDomainRecords()

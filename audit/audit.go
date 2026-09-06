@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -146,6 +147,9 @@ type sqlStore struct{ db *sql.DB }
 
 func openSQLite(dsn string) (Store, error) {
 	if dsn != ":memory:" && !strings.HasPrefix(dsn, "file:") {
+		if err := os.MkdirAll(filepath.Dir(dsn), 0700); err != nil {
+			return nil, err
+		}
 		f, err := os.OpenFile(dsn, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
 			return nil, err
