@@ -156,12 +156,13 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		jsonResponse(w, struct {
-			Cluster     config.ClusterSettings
-			Audit       config.AuditSettings
-			Policies    []clusterPolicyView
-			SyncErrors  map[string]string
-			SyncPending bool
-		}{c.Cluster, c.Audit, policyViews(c), clusterSyncErrors(), clusterSyncPending()})
+			Cluster         config.ClusterSettings
+			Audit           config.AuditSettings
+			Policies        []clusterPolicyView
+			SyncErrors      map[string]string
+			SyncPending     bool
+			DefaultNodeName string
+		}{c.Cluster, c.Audit, policyViews(c), clusterSyncErrors(), clusterSyncPending(), c.DefaultNodeName()})
 		return
 	}
 	if !jsonMutation(w, r) {
@@ -219,6 +220,10 @@ func ClusterSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if n.ID == in.Cluster.LocalID {
 			n.Token = in.Cluster.Token
+			n.Name = strings.TrimSpace(n.Name)
+			if n.Name == "" {
+				n.Name = c.DefaultNodeName()
+			}
 		}
 	}
 	in.Cluster.Version = c.Cluster.Version

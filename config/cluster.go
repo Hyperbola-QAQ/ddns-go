@@ -159,13 +159,17 @@ func (c Config) Node(id string) (ClusterNode, bool) {
 		}
 	}
 	if id == c.Cluster.LocalID {
-		name, _ := os.Hostname()
-		if name == "" {
-			name = id
-		}
-		return ClusterNode{ID: id, Name: name}, true
+		return ClusterNode{ID: id, Name: c.DefaultNodeName()}, true
 	}
 	return ClusterNode{}, false
+}
+
+func (c Config) DefaultNodeName() string {
+	name, _ := os.Hostname()
+	if name == "" {
+		return c.Cluster.LocalID
+	}
+	return name
 }
 
 func (c Config) ValidateCluster() error {

@@ -16,28 +16,33 @@
 <main class="container pb-3">
 <p id="message" role="status" aria-live="polite"></p>
 {{if eq . "cluster"}}
-<section class="portlet"><h5 class="portlet__head">集群管理</h5><div class="portlet__body">
-<p>每个节点独立运行，先触发的节点在本机更新；同时触发时通过短暂随机竞争选出一个执行。保存后立即同步共享配置，离线节点恢复后自动补齐。各节点可独立登录，登录不依赖其他节点在线。</p>
-<div class="form-group"><label for="localID">本机节点 ID（自动生成）</label><input class="form-control" id="localID" readonly></div>
-<div class="form-group"><label for="localName">本机名称</label><input class="form-control" id="localName" readonly></div>
-<div class="form-group"><label for="localURL">本机访问地址</label><input class="form-control" id="localURL"><small class="text-muted">自动填入当前访问地址；请确保其他节点可通过此地址访问本机。</small></div>
-<div class="form-group"><label for="token">本机访问令牌</label><input class="form-control" id="token" type="text" autocomplete="off"><small class="text-muted">至少 32 字符；留空保留原值。将同一令牌填到其他节点对此节点的访问令牌中。</small> <button type="button" id="generate" disabled class="btn btn-secondary btn-sm">生成令牌</button></div>
-<pre id="tokenPlain" class="border rounded p-2" aria-label="本机令牌明文"></pre>
-<div class="form-group"><label for="driver">审计数据库驱动</label><input class="form-control" id="driver" placeholder="sqlite"><small class="text-muted">内置 sqlite；其他驱动需注册存储适配器。数据库设置在重启后生效。</small></div>
-<div class="form-group"><label for="dsn">审计数据库路径 / DSN</label><input class="form-control" id="dsn" placeholder="默认：配置文件路径.audit.db"></div>
-</div></section>
-<div class="d-flex justify-content-between my-3"><h5>关联节点</h5><button id="add" class="btn btn-secondary">添加节点</button></div>
+<section class="portlet"><h5 class="portlet__head">集群成员</h5><div class="portlet__body">
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+<strong id="localMember"></strong><button id="add" type="button" class="btn btn-primary" disabled>添加节点</button></div>
 <div id="nodes"></div>
-
-<button id="save" disabled class="btn btn-primary">保存集群设置</button>
-<p id="saveMessage" role="status" aria-live="polite" class="mt-2"></p>
-<p class="text-muted mt-2">添加其他节点只需访问地址和令牌，名称与 ID 自动识别。各节点的 IP 获取方式和域名在配置管理页面按节点编辑；IPv6 自定义后缀在该配置的 IPv6 区域统一设置。</p>
-<template id="nodeTemplate"><section class="portlet"><div class="portlet__body">
-<p class="node-identity text-muted">保存后自动识别节点名称和 ID</p>
-<div class="form-group"><label>访问地址<input data-field="URL" class="form-control" placeholder="https://node.example.com"></label></div>
-<div class="form-group"><label>访问此节点的令牌<input data-field="Token" class="form-control" type="text" autocomplete="off" placeholder="留空保留"></label></div>
-<button type="button" class="btn btn-outline-danger remove">删除节点</button>
-</div></section></template>
+<form id="memberEditor" class="border rounded p-3 mb-3" hidden>
+<h6 id="editorTitle"></h6>
+<p><code id="nodeIdentity"></code></p>
+<div id="nameField" class="form-group"><label>本机显示名称<input class="form-control" id="localName"></label><small>留空使用系统主机名。</small></div>
+<div class="form-group"><label>访问地址<input class="form-control" id="nodeURL" type="url" required></label></div>
+<div class="form-group"><label><span id="tokenLabel"></span><input class="form-control" id="token" type="password" autocomplete="off"></label>
+<small id="tokenHelp"></small><div class="mt-2"><button type="button" id="showToken" class="btn btn-secondary btn-sm">显示令牌</button>
+<button type="button" id="generate" class="btn btn-secondary btn-sm">生成新令牌</button></div></div>
+<p id="removePrompt" hidden></p>
+<div class="d-flex flex-wrap align-items-center">
+<button type="submit" id="saveMember" class="btn btn-primary mr-2">保存并同步</button>
+<button type="button" id="cancelMember" class="btn btn-secondary mr-2">取消</button>
+<button type="button" id="removeMember" class="btn btn-outline-danger">移除节点…</button>
+</div></form>
+</div></section>
+<details class="portlet"><summary class="portlet__head">审计存储设置</summary><form id="auditSettings" class="portlet__body">
+<div class="form-group"><label>审计数据库驱动<input class="form-control" id="driver" placeholder="sqlite"></label><small>内置 sqlite。其他驱动需要已注册的存储适配器。</small></div>
+<div class="form-group"><label>审计数据库路径 / DSN<input class="form-control" id="dsn" placeholder="默认：配置文件路径.audit.db"></label></div>
+<p>设置将同步到其他成员，各节点重启服务后生效。</p>
+<button class="btn btn-primary" id="saveAudit" disabled>保存审计设置并同步</button>
+<button type="button" class="btn btn-secondary" id="resetAudit">撤销编辑</button>
+</form></details>
+<script src="./static/cluster-management.js" defer></script>
 {{else}}
 <section class="portlet"><h5 class="portlet__head">审计日志</h5><div class="portlet__body">
 <div class="row"><div class="col-md-3 form-group"><label for="config">配置名称</label><input class="form-control" id="config"></div><div class="col-md-3 form-group"><label for="node">节点名称</label><input class="form-control" id="node"></div><div class="col-md-3 form-group"><label for="operation">操作类型</label><input class="form-control" id="operation" placeholder="例如 config.edit"></div><div class="col-md-3 form-group"><button id="query" class="btn btn-primary mt-4">查询</button></div></div>
@@ -61,58 +66,7 @@ function showStatus(text, failed=false) {
  }
 }
 function fail(e) { showStatus(e.message, true); }
-if (document.getElementById('nodes')) {
- const nodes = document.getElementById('nodes');
- function addNode(node={}) {
-  const card=document.getElementById('nodeTemplate').content.cloneNode(true);
-  card.querySelector('section').dataset.id=node.ID||''; card.querySelector('section').dataset.name=node.Name||'';
-  if(node.ID)card.querySelector('.node-identity').textContent=(node.Name||node.ID)+' ('+node.ID+')';
-  card.querySelectorAll('[data-field]').forEach(input=>input.value=node[input.dataset.field]||'');
-  card.querySelector('.remove').onclick=e=>e.target.closest('section').remove(); nodes.append(card);
- }
- document.getElementById('add').onclick=()=>addNode();
- const tokenInput=document.getElementById('token');
- function showToken(value) { tokenInput.type='text'; tokenInput.value=value; document.getElementById('tokenPlain').textContent=value||'尚未生成令牌'; }
- tokenInput.oninput=()=>showToken(tokenInput.value);
- document.getElementById('generate').onclick=async()=>{
-  try { const data=await api('./cluster/token',{}); showToken(data.Token); showStatus('令牌已生成并明文显示，请保存集群设置。'); }
-  catch(e) { fail(e); }
- };
- let statusTimer;
- async function checkSync() {
-  try {
-   const data=await api('./cluster/settings');
-   if (data.SyncPending) { showStatus('本机已保存，正在同步到其他节点…'); statusTimer=setTimeout(checkSync,2000); return; }
-   const errors=Object.entries(data.SyncErrors||{});
-   if (errors.length) { showStatus('本机已保存；'+errors.map(([id,error])=>id+'：'+error).join('；'),true); }
-   else { showStatus('本机已保存，节点同步检查完成。'); }
-  } catch(e) { fail(e); }
- }
- document.getElementById('save').onclick=async()=>{
-  const button=document.getElementById('save'); button.disabled=true; button.textContent='正在保存…'; clearTimeout(statusTimer);
-  showStatus('正在保存集群设置…');
-  try {
-   const list=Array.from(nodes.children,card=>({ID:card.dataset.id,Name:card.dataset.name,...Object.fromEntries(Array.from(card.querySelectorAll('[data-field]'),input=>[input.dataset.field,input.value.trim()]))}));
-   list.push({ID:document.getElementById('localID').value,Name:document.getElementById('localName').value,URL:document.getElementById('localURL').value.trim(),Token:tokenInput.value});
-   const saved=await api('./cluster/settings',{Cluster:{LocalID:document.getElementById('localID').value,Token:tokenInput.value,Nodes:list},Audit:{Driver:document.getElementById('driver').value.trim(),DSN:document.getElementById('dsn').value.trim()}});
-   if(saved.Cluster) { showToken(saved.Cluster.Token); nodes.replaceChildren(); saved.Cluster.Nodes.filter(n=>n.ID!==saved.Cluster.LocalID).forEach(addNode); }
-
-
-   showStatus('本机已保存，正在同步到其他节点；数据库设置重启后生效。');
-   statusTimer=setTimeout(checkSync,5000);
-  } catch(e){fail(e);}
-  finally { button.disabled=false; button.textContent='保存集群设置'; }
- };
- api('./cluster/settings').then(data=>{
-  showToken(data.Cluster.Token||'');document.getElementById('localID').value=data.Cluster.LocalID;document.getElementById('driver').value=data.Audit.Driver||'sqlite';document.getElementById('dsn').value=data.Audit.DSN||'';
-  const self=(data.Cluster.Nodes||[]).find(n=>n.ID===data.Cluster.LocalID)||{};
-  document.getElementById('localName').value=self.Name||data.Cluster.LocalID;
-  document.getElementById('localURL').value=self.URL||location.href.split('?')[0].replace(/\/cluster\/?$/, '');
-  (data.Cluster.Nodes||[]).filter(n=>n.ID!==data.Cluster.LocalID).forEach(addNode);
-  message.textContent=Object.entries(data.SyncErrors||{}).map(([id,error])=>id+"："+error).join("；");
-  document.getElementById('generate').disabled=false;document.getElementById('save').disabled=false;
- }).catch(fail);
-} else {
+if (document.getElementById('events')) {
  let offset=0;
  async function query() {
   try{
