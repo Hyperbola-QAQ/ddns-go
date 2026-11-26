@@ -31,3 +31,7 @@ Follow recent commit prefixes: `fix:`, `feat(dns):`, and `build(deps):`. Keep su
 ## Security & Configuration
 
 Keep DNS tokens, passwords, and personal YAML configuration out of commits, fixtures, and logs. Use dummy credentials in tests and a separate development configuration.
+
+## Fork-specific development
+
+Prioritize rapid iteration on this fork's personal features. Change their configuration formats, state formats, and interfaces directly when the design improves. Omit legacy readers, migration code, and compatibility layers for earlier custom versions unless explicitly requested. When a custom change conflicts with upstream, resolve the conflict in favor of upstream, then reimplement the intended custom behavior on that base.

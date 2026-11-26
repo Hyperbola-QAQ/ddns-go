@@ -269,18 +269,18 @@ func customSuffixJobs(c config.Config, d config.DnsConfig, prefix string, batch 
 	if prefix == "" {
 		return nil, errors.New("自定义后缀尚无可用 IPv6 前缀，请启用至少一个节点的 IPv6 获取")
 	}
-	lines := strings.Split(strings.TrimSpace(d.IPv6Suffix.IPs), "\n")
-	if len(lines) != len(d.IPv6Suffix.Domains) || len(d.IPv6Suffix.Domains) == 0 {
-		return nil, errors.New("自定义后缀和域名数量不一致")
+	if len(d.IPv6Suffix.Groups) == 0 {
+		return nil, errors.New("自定义 IPv6 后缀组为空")
 	}
 	var jobs []cluster.Job
-	for i, suffix := range lines {
-		ip, err := cluster.Compose(prefix, strings.TrimSpace(suffix))
+	for groupIndex, group := range d.IPv6Suffix.Groups {
+		ip, err := cluster.Compose(prefix, group.Suffix)
 		if err != nil {
 			return nil, err
 		}
-		idx := i
-		jobs = append(jobs, cluster.Job{NodeID: c.Cluster.LocalID, IPv6: ip, Batch: batch, CustomSuffix: true, IPv6Index: &idx})
+		for domainIndex := range group.Domains {
+			jobs = append(jobs, cluster.Job{NodeID: c.Cluster.LocalID, IPv6: ip, Batch: batch, CustomSuffix: true, SuffixGroup: groupIndex, IPv6Index: &domainIndex})
+		}
 	}
 	return jobs, nil
 }
@@ -426,8 +426,11 @@ func executeCluster(ctx context.Context, c config.Config, d config.DnsConfig, r 
 			if d.IPv6Suffix == nil || !d.IPv6Suffix.Enable || j.IPv6Index == nil || j.IPv4 != "" || j.IPv6 == "" {
 				return errors.New("无效自定义后缀更新任务")
 			}
+			if j.SuffixGroup < 0 || j.SuffixGroup >= len(d.IPv6Suffix.Groups) {
+				return errors.New("后缀组索引无效")
+			}
 			dc.Ipv4 = config.IPConfig{}
-			dc.Ipv6 = config.IPConfig{Enable: true, Domains: d.IPv6Suffix.Domains}
+			dc.Ipv6 = config.IPConfig{Enable: true, Domains: d.IPv6Suffix.Groups[j.SuffixGroup].Domains}
 		}
 		dc.RequestContext = ctx
 		n, _ := c.Node(j.NodeID)
@@ -478,9 +481,9 @@ func executeCluster(ctx context.Context, c config.Config, d config.DnsConfig, r 
 			IPv4Domains []string
 			IPv6Domains []string
 		}{j.IPv4, j.IPv6, dc.Ipv4.Domains, dc.Ipv6.Domains})
-		audit.Record(audit.Event{Actor: actor, Host: c.Cluster.LocalID, Operation: "dns.update", Config: d.DisplayName(), Node: n.Name, Before: previousValue(d.Cluster.Group + "/" + j.NodeID + fmt.Sprint(j.Batch) + fmt.Sprint(j.CustomSuffix) + fmt.Sprint(j.IPv6IndexValue())), After: string(after), Result: result})
+		audit.Record(audit.Event{Actor: actor, Host: c.Cluster.LocalID, Operation: "dns.update", Config: d.DisplayName(), Node: n.Name, Before: previousValue(d.Cluster.Group + "/" + j.NodeID + fmt.Sprint(j.Batch) + fmt.Sprintf("%t/%d/", j.CustomSuffix, j.SuffixGroup) + fmt.Sprint(j.IPv6IndexValue())), After: string(after), Result: result})
 		if result == "ok" {
-			previousUpdates[d.Cluster.Group+"/"+j.NodeID+fmt.Sprint(j.Batch)+fmt.Sprint(j.CustomSuffix)+fmt.Sprint(j.IPv6IndexValue())] = string(after)
+			previousUpdates[d.Cluster.Group+"/"+j.NodeID+fmt.Sprint(j.Batch)+fmt.Sprintf("%t/%d/", j.CustomSuffix, j.SuffixGroup)+fmt.Sprint(j.IPv6IndexValue())] = string(after)
 		}
 		if result != "ok" {
 			return errors.New("DNS 服务商更新失败，稍后重试")

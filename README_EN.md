@@ -1,12 +1,12 @@
-# DDNS-GO
+# ddns-go distributed cluster fork
 
-[![GitHub release](https://img.shields.io/github/release/jeessy2/ddns-go.svg?logo=github&style=flat-square) ![GitHub release downloads](https://img.shields.io/github/downloads/jeessy2/ddns-go/total?logo=github)](https://github.com/jeessy2/ddns-go/releases/latest) [![Go version](https://img.shields.io/github/go-mod/go-version/jeessy2/ddns-go)](https://github.com/jeessy2/ddns-go/blob/master/go.mod) [![](https://goreportcard.com/badge/github.com/jeessy2/ddns-go/v6)](https://goreportcard.com/report/github.com/jeessy2/ddns-go/v6) [![](https://img.shields.io/docker/image-size/jeessy/ddns-go)](https://registry.hub.docker.com/r/jeessy/ddns-go) [![](https://img.shields.io/docker/pulls/jeessy/ddns-go)](https://registry.hub.docker.com/r/jeessy/ddns-go)
+[中文集群部署指南](README.md) | English
 
-[中文](https://github.com/jeessy2/ddns-go/blob/master/README.md) | English
+This personal fork extends [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go) for one operator managing several hosts. Upstream provides IP discovery and DNS provider integrations. In this fork, each peer collects its own address and shares configuration with the others. For each update cycle, one peer acquires a short lease and updates DNS. Peers can also track a shared IPv6 prefix and bind multiple domains to one host suffix.
 
-Automatically obtain your public IPv4 or IPv6 address and resolve it to the corresponding domain name service.
+For cluster deployment, build the `feature-distributed-cluster` branch of this repository and run the same build on every peer. The release downloads and Docker image in the upstream reference below provide the upstream feature set.
 
-- [DDNS-GO](#ddns-go)
+- [ddns-go distributed cluster fork](#ddns-go-distributed-cluster-fork)
     - [Features](#features)
     - [Use in system](#use-in-system)
     - [Use in docker](#use-in-docker)

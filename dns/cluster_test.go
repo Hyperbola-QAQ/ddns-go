@@ -2,6 +2,7 @@ package dns
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -239,7 +240,10 @@ func TestIndependentCustomSuffixDomains(t *testing.T) {
 	}))
 	defer provider.Close()
 	c := config.Config{Cluster: config.ClusterSettings{LocalID: "self"}}
-	d := config.DnsConfig{ID: "independent", DNS: config.DNS{Name: "callback", ID: provider.URL + "?domain=#{domain}&ip=#{ip}"}, Cluster: config.ClusterPolicy{Enabled: true, NodeIDs: "self"}, Networks: []config.NodeNetwork{{NodeID: "self", Ipv6: config.IPConfig{Enable: true, GetType: "cmd", Cmd: "printf '2001:db8:1::12'", Domains: []string{"node.example.com"}}}}, IPv6Suffix: &config.SuffixConfig{Enable: true, IPs: "::1000\n::1001", Domains: []string{"custom1.example.com", "custom2.example.com"}}}
+	d := config.DnsConfig{ID: "independent", DNS: config.DNS{Name: "callback", ID: provider.URL + "?domain=#{domain}&ip=#{ip}"}, Cluster: config.ClusterPolicy{Enabled: true, NodeIDs: "self"}, Networks: []config.NodeNetwork{{NodeID: "self", Ipv6: config.IPConfig{Enable: true, GetType: "cmd", Cmd: "printf '2001:db8:1::12'", Domains: []string{"node.example.com"}}}}, IPv6Suffix: &config.SuffixConfig{Enable: true, Groups: []config.SuffixGroup{{Suffix: "::1000", Domains: []string{"custom1.example.com"}}, {Suffix: "::1001", Domains: []string{"custom2.example.com"}}}}}
+	for i := 1; i < 14; i++ {
+		d.IPv6Suffix.Groups[0].Domains = append(d.IPv6Suffix.Groups[0].Domains, fmt.Sprintf("alias%d.example.com", i))
+	}
 	c.DnsConf = []config.DnsConfig{d}
 	c.ClusterDefaults()
 	d = c.DnsConf[0]
@@ -256,8 +260,10 @@ func TestIndependentCustomSuffixDomains(t *testing.T) {
 	if err := runCluster(c, d); err != nil {
 		t.Fatal(err)
 	}
-	if records["custom1.example.com"] != "2001:db8:2::1000" {
-		t.Fatal("custom domain did not follow prefix change")
+	for _, domain := range d.IPv6Suffix.Groups[0].Domains {
+		if records[domain] != "2001:db8:2::1000" {
+			t.Fatalf("%s did not follow prefix change", domain)
+		}
 	}
 	d.IPv6Suffix.Enable = false
 	jobs, err := customSuffixJobs(c, d, "2001:db8:2::/64", false)

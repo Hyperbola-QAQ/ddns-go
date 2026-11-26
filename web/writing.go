@@ -9,7 +9,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jeessy2/ddns-go/v6/cluster"
 	"github.com/jeessy2/ddns-go/v6/config"
+	"github.com/jeessy2/ddns-go/v6/util"
 )
 
 //go:embed writing.html management.html
@@ -45,6 +47,25 @@ type dnsConf4JS struct {
 	HttpInterface    string
 }
 
+type prefixSnapshot struct {
+	Prefix  string
+	Reports map[string]string
+}
+
+func prefixSnapshots() map[string]prefixSnapshot {
+	states, err := cluster.LoadState(util.GetConfigFilePath() + ".cluster-state.json")
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]prefixSnapshot, len(states))
+	for id, state := range states {
+		if state != nil {
+			out[id] = prefixSnapshot{state.Prefix, state.Reports}
+		}
+	}
+	return out
+}
+
 // Writing 填写信息
 func Writing(writer http.ResponseWriter, request *http.Request) {
 	tmpl, err := template.ParseFS(writingEmbedFile, "writing.html")
@@ -78,6 +99,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	err = tmpl.Execute(writer, struct {
+		PrefixSnapshots   map[string]prefixSnapshot
 		LocalID           string
 		ClusterNodes      template.JS
 		DnsConf           template.JS
@@ -90,6 +112,7 @@ func Writing(writer http.ResponseWriter, request *http.Request) {
 		Ipv6          []config.NetInterface
 		AllInterfaces []config.NetInterface
 	}{
+		PrefixSnapshots:   prefixSnapshots(),
 		LocalID:           conf.Cluster.LocalID,
 		ClusterNodes:      nodeNamesJSON(conf),
 		DnsConf:           template.JS(getDnsConfStr(conf.DnsConf)),

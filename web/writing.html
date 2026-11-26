@@ -150,11 +150,19 @@
 <div class="portlet"><div class="portlet__body">
 <div class="form-group"><label><input type="checkbox" id="prefixCooperation"> 集群 IPv6 前缀协作更新</label><small class="form-text text-muted">前缀变化仅更新当前 DDNS 配置的 IPv6 域名；此配置的全部节点应使用同一前缀。</small></div>
 <div class="row"><div class="form-group col-md-6"><label for="prefixLength">IPv6 前缀长度（默认 64）</label><input id="prefixLength" class="form-control" type="number" min="1" max="128"></div><div class="form-group col-md-6"><label for="prefixCooldown">前缀冷却时间（秒，默认 60）</label><input id="prefixCooldown" class="form-control" type="number" min="1" max="3600"></div></div>
-</div></div><div id="nodeNetworks6"></div>
-<div class="portlet"><h5 class="portlet__head">自定义 IP 后缀</h5><div class="portlet__body">
-<label><input type="checkbox" id="suffixEnabled"> 是否启用</label>
-<div id="suffixBody"><label for="suffixIPs">IP</label><textarea class="form-control" id="suffixIPs" rows="3" placeholder="::1000&#10;::1001"></textarea><small class="form-text text-muted">每行一个 IPv6 后缀，与下方 Domains 逐行对应；使用当前配置的 IPv6 前缀生成地址。单段最多四位十六进制数。</small><label for="suffixDomains" class="mt-3">Domains</label><textarea class="form-control" id="suffixDomains" rows="3" placeholder="host1.example.com&#10;host2.example.com"></textarea><small class="form-text text-muted">每行一个域名，与上方后缀一一对应；与各节点的 Domains 独立配置，不能重复。</small></div>
-</div></div></section>
+<div><strong>已确认公共前缀</strong> <code id="confirmedPrefix"></code> <small id="prefixAgreement"></small>
+<details><summary>节点最近上报与自身域名</summary><ul id="prefixReports"></ul></details></div>
+</div></div>
+<div class="portlet"><h5 class="portlet__head">自定义后缀组</h5><div class="portlet__body">
+<label><input type="checkbox" id="suffixEnabled"> 启用自定义后缀组</label>
+<div id="suffixBody"><div id="suffixGroups"></div><button type="button" class="btn btn-secondary" id="addSuffixGroup">添加后缀组</button></div>
+<template id="suffixGroupTemplate"><section class="border-top py-3">
+<label>IPv6 后缀<input class="form-control" placeholder="::10"></label>
+<output class="form-text"></output>
+<details><summary></summary><label class="d-block">关联域名（每行一个）<textarea class="form-control" rows="4"></textarea></label></details>
+<button type="button" class="btn btn-link">移除此组</button>
+</section></template>
+</div></div><div id="nodeNetworks6"></div></section>
 <p class="text-muted">集群节点自动显示在每个配置中，按需启用 IPv4 或 IPv6。节点地址与令牌在“集群管理”维护。</p>
 <template id="networkTemplate"><section class="node-network">
           <div class="portlet">
@@ -435,6 +443,7 @@
     WebhookRequestBody: document.getElementById("WebhookRequestBody").value,
     WebhookHeaders: document.getElementById("WebhookHeaders").value,
   };
+  const prefixSnapshots = {{.PrefixSnapshots}};
   const clusterNodes = {{.ClusterNodes}};
  const localNodeID={{.LocalID}};
  const defaultDnsConf = {

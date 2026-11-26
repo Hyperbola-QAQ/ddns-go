@@ -504,7 +504,10 @@ func cloneConfig(c Config) Config {
 	for i := range c.DnsConf {
 		if c.DnsConf[i].IPv6Suffix != nil {
 			v := *c.DnsConf[i].IPv6Suffix
-			v.Domains = append([]string(nil), v.Domains...)
+			v.Groups = append([]SuffixGroup(nil), v.Groups...)
+			for j := range v.Groups {
+				v.Groups[j].Domains = append([]string(nil), v.Groups[j].Domains...)
+			}
 			c.DnsConf[i].IPv6Suffix = &v
 		}
 		c.DnsConf[i].Networks = append([]NodeNetwork(nil), c.DnsConf[i].Networks...)

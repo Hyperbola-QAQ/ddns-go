@@ -29,6 +29,7 @@ func (e *HTTPError) Error() string {
 
 type Job struct {
 	CustomSuffix bool
+	SuffixGroup  int `json:",omitempty"`
 	NodeID       string
 	IPv4         string
 	IPv6         string

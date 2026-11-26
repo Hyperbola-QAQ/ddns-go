@@ -94,23 +94,27 @@ func (d DnsConfig) ValidateNetworks(c Config) error {
 		}
 	}
 	if d.IPv6Suffix != nil && d.IPv6Suffix.Enable {
-		lines := strings.Split(strings.TrimSpace(d.IPv6Suffix.IPs), "\n")
-		if len(d.IPv6Suffix.Domains) == 0 || len(lines) != len(d.IPv6Suffix.Domains) {
-			return fmt.Errorf("自定义 IPv6 后缀和 Domains 必须逐行对应，且不能为空")
+		if len(d.IPv6Suffix.Groups) == 0 {
+			return fmt.Errorf("请至少添加一个 IPv6 后缀组")
 		}
-		for i, domain := range d.IPv6Suffix.Domains {
-			if err := validateSuffix(strings.TrimSpace(lines[i]), d.Cluster.PrefixLength); err != nil {
+		for _, group := range d.IPv6Suffix.Groups {
+			if err := validateSuffix(group.Suffix, d.Cluster.PrefixLength); err != nil {
 				return err
 			}
-			parsed := checkParseDomains([]string{domain})
-			if len(parsed) != 1 {
-				return fmt.Errorf("自定义后缀域名无效")
+			if len(group.Domains) == 0 {
+				return fmt.Errorf("IPv6 后缀 %s 至少需要一个域名", group.Suffix)
 			}
-			key := "1" + strings.ToLower(strings.TrimSuffix(parsed[0].ToASCII(), "."))
-			if domains[key] {
-				return fmt.Errorf("自定义后缀域名重复或与节点 IPv6 域名冲突: %s", domain)
+			for _, domain := range group.Domains {
+				parsed := checkParseDomains([]string{domain})
+				if len(parsed) != 1 {
+					return fmt.Errorf("自定义后缀域名无效")
+				}
+				key := "1" + strings.ToLower(strings.TrimSuffix(parsed[0].ToASCII(), "."))
+				if domains[key] {
+					return fmt.Errorf("自定义后缀域名重复或与节点 IPv6 域名冲突: %s", domain)
+				}
+				domains[key] = true
 			}
-			domains[key] = true
 		}
 	}
 	if d.Cluster.Enabled && len(d.Networks) > 0 {
@@ -133,20 +137,16 @@ func (n NodeNetwork) MarshalYAML() (any, error) {
 	}{n.NodeID, n.Ipv4, n.Ipv6, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: n.Suffixes, Style: yaml.DoubleQuotedStyle}}, nil
 }
 
-// Each DNS configuration has one optional suffix list with its own domain bindings.
-type SuffixConfig struct {
-	Enable  bool
-	IPs     string
+type SuffixGroup struct {
+	Suffix  string
 	Domains []string
 }
 
-func (s SuffixConfig) MarshalYAML() (any, error) {
-	return struct {
-		Enable  bool
-		IPs     *yaml.Node
-		Domains []string
-	}{s.Enable, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s.IPs, Style: yaml.DoubleQuotedStyle}, s.Domains}, nil
+type SuffixConfig struct {
+	Enable bool
+	Groups []SuffixGroup
 }
+
 func (d DnsConfig) NetworkWithSuffix(id string) (NodeNetwork, bool) {
 	n, ok := d.Network(id)
 	if d.IPv6Suffix != nil {

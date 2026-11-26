@@ -36,15 +36,7 @@ function renderNodeNetworks(conf) {
     n.Ipv4.Enable=false;n.Ipv6.Enable=false;n.Ipv4.Domains=[];n.Ipv6.Domains=[];conf.Networks.push(n);
   }
   conf.Cluster.NodeIDs=conf.Networks.map(n=>n.NodeID).join(',');
-  conf.IPv6Suffix ||= {Enable:false, IPs:'', Domains:[]};
-  const suffixEnabled = document.getElementById('suffixEnabled'), suffixIPs = document.getElementById('suffixIPs');
-  const suffixDomains=document.getElementById('suffixDomains');
-  suffixDomains.value=(conf.IPv6Suffix.Domains||[]).join('\n');
-  suffixDomains.oninput=()=>conf.IPv6Suffix.Domains=suffixDomains.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  suffixEnabled.checked = conf.IPv6Suffix.Enable;suffixIPs.value = conf.IPv6Suffix.IPs;
-  function suffixVisibility(){document.getElementById('suffixBody').hidden=!conf.IPv6Suffix.Enable;}
-  suffixEnabled.onchange=()=>{conf.IPv6Suffix.Enable=suffixEnabled.checked;suffixVisibility();};
-  suffixIPs.oninput=()=>conf.IPv6Suffix.IPs=suffixIPs.value;suffixVisibility();
+  renderSuffixGroups(conf);
   for (const family of ['Ipv4','Ipv6']) {
     const container=document.getElementById('nodeNetworks'+family.slice(-1));container.replaceChildren();
     conf.Networks.forEach((network,index)=>{
@@ -103,4 +95,101 @@ function renderNodeNetworks(conf) {
       refresh.onclick=()=>populate(true);convertDom(card);container.append(card);visibility();populate();
     });
   }
+}
+
+// Parse the canonical IPv6 spelling into eight words, including compressed zeros.
+function ipv6Value(address) {
+  if (!/^[0-9a-f:]+$/i.test(address) || !address.includes(':')) throw Error();
+  const canonical = new URL('http://[' + address + ']/').hostname.slice(1, -1);
+  const [left, right] = canonical.split('::');
+  const leading = left ? left.split(':') : [];
+  const trailing = right ? right.split(':') : [];
+  const words = [...leading, ...Array(8-leading.length-trailing.length).fill('0'), ...trailing];
+  return BigInt('0x' + words.map(word => word.padStart(4, '0')).join(''));
+}
+
+function renderSuffixGroups(conf) {
+  const snapshot = prefixSnapshots?.[conf.ID];
+  const prefix = snapshot?.Prefix || '';
+  document.getElementById('confirmedPrefix').textContent = prefix || '等待首次成功更新';
+  const reports = document.getElementById('prefixReports');
+  reports.replaceChildren();
+  const participants = conf.Networks.filter(n => n.Ipv6?.Enable);
+  let matched = 0;
+  for (const network of participants) {
+    const item = document.createElement('li');
+    const node = clusterNodes.find(n => n.ID === network.NodeID);
+    const address = snapshot?.Reports?.[network.NodeID];
+    if (prefix && address) {
+      const [networkAddress, bits] = prefix.split('/');
+      const hostBits = BigInt(128 - Number(bits));
+      if ((ipv6Value(address) >> hostBits) === (ipv6Value(networkAddress) >> hostBits)) matched++;
+    }
+    item.textContent = [node?.Name || network.NodeID, address || '暂无上报', ...(network.Ipv6.Domains || [])].join(' · ');
+    reports.append(item);
+  }
+
+  document.getElementById('prefixAgreement').textContent = prefix && participants.length
+    ? matched + ' / ' + participants.length + ' 个节点最近上报与已确认前缀一致' : '';
+
+  const config = conf.IPv6Suffix ||= {Enable:false, Groups:[]};
+  config.Groups ||= [];
+  const enabled = document.getElementById('suffixEnabled');
+  const body = document.getElementById('suffixBody');
+  const list = document.getElementById('suffixGroups');
+  enabled.checked = config.Enable;
+  body.hidden = !config.Enable;
+  list.replaceChildren();
+
+  function showGroup(group, open) {
+    const row = document.getElementById('suffixGroupTemplate').content.firstElementChild.cloneNode(true);
+    const suffix = row.querySelector('input');
+    const domains = row.querySelector('textarea');
+    const preview = row.querySelector('output');
+    const summary = row.querySelector('summary');
+    function updatePreview() {
+      const [network, bits] = prefix.split('/');
+      if (!network || Number(bits) !== Number(conf.Cluster.PrefixLength)) {
+        preview.textContent = '等待确认当前长度的公共前缀';
+        return;
+      }
+      try {
+        const host = ipv6Value(group.Suffix);
+        if (host >= (1n << BigInt(128-Number(bits)))) throw Error();
+        const hex = (ipv6Value(network) | host).toString(16).padStart(32,'0');
+        preview.textContent = 'AAAA → ' + new URL('http://['+hex.match(/.{4}/g).join(':')+']/').hostname.slice(1,-1);
+      } catch {
+        preview.textContent = '请输入仅含主机位的 IPv6 后缀';
+      }
+    }
+    suffix.value = group.Suffix;
+    suffix.oninput = () => { group.Suffix = suffix.value.trim(); updatePreview(); };
+    domains.value = (group.Domains || []).join('\n');
+    domains.oninput = () => {
+      group.Domains = domains.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      summary.textContent = '关联域名（' + group.Domains.length + '）';
+    };
+    domains.oninput();
+    updatePreview();
+    row.querySelector('details').open = open;
+    row.querySelector('button').onclick = () => {config.Groups.splice(config.Groups.indexOf(group), 1); row.remove();};
+    list.append(row);
+    if (open) suffix.focus();
+  }
+  function add() {
+    const group = {Suffix:'', Domains:[]};
+    config.Groups.push(group);
+    showGroup(group, true);
+  }
+  enabled.onchange = () => {
+    config.Enable = enabled.checked;
+    body.hidden = !enabled.checked;
+    if (enabled.checked && !config.Groups.length) add();
+  };
+  document.getElementById('addSuffixGroup').onclick = add;
+  config.Groups.forEach(group => showGroup(group, false));
+  document.getElementById('prefixLength').onchange = event => {
+    conf.Cluster.PrefixLength = Number(event.target.value);
+    list.querySelectorAll('input').forEach(input => input.oninput());
+  };
 }
