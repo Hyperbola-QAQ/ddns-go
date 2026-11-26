@@ -6,7 +6,7 @@ This repository is the Go module `github.com/jeessy2/ddns-go/v6`. `main.go` hand
 
 ## Build, Test, and Development Commands
 
-Use the Go version declared in `go.mod` (currently 1.25.0).
+Use the Go version declared in `go.mod`.
 
 - `make build`: build the `ddns-go` binary with version metadata and CGO disabled.
 - `make test` or `go test ./...`: run all package tests.
