@@ -9,6 +9,8 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,12 +58,23 @@ func Login(writer http.ResponseWriter, request *http.Request) {
 
 	conf, _ := config.GetConfigCached()
 
+	emptyUser := conf.Username == "" && conf.Password == ""
+	var tokenCommand string
+	if emptyUser {
+		if path, err := filepath.Abs(util.GetConfigFilePath()); err == nil {
+			quotedPath := "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
+			tokenCommand = "yq -r '.cluster.token' " + quotedPath
+		}
+	}
+
 	err = tmpl.Execute(writer, struct {
-		EmptyUser bool   // 未填写用户名和密码
-		Lang      string // 当前后端语言
+		TokenCommand string
+		EmptyUser    bool   // 未填写用户名和密码
+		Lang         string // 当前后端语言
 	}{
-		EmptyUser: conf.Username == "" && conf.Password == "",
-		Lang:      conf.Lang,
+		EmptyUser:    emptyUser,
+		TokenCommand: tokenCommand,
+		Lang:         conf.Lang,
 	})
 	if err != nil {
 		fmt.Println("Error happened..")

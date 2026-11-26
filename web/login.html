@@ -64,6 +64,15 @@
             </div>
           </div>
         </form>
+        {{if .TokenCommand}}
+        <details class="portlet mt-3">
+          <summary class="portlet__head">将本机加入已有集群</summary>
+          <div class="portlet__body">
+            <p>在本机终端运行以下命令（需要 yq 和配置文件读取权限），然后在已有集群的「添加节点」中填写本机地址和令牌。加入成功后使用已有集群的管理账号登录。</p>
+            <pre class="user-select-all" style="color: inherit; white-space: pre-wrap; overflow-wrap: anywhere"><code>{{.TokenCommand}}</code></pre>
+          </div>
+        </details>
+        {{end}}
       </div>
     </div>
   </main>

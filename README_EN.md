@@ -17,7 +17,7 @@ For cluster deployment, build the `feature-distributed-cluster` branch of this r
 
 ## Joining a cluster
 
-To add B from A, create the administrator account on A within 30 minutes of starting it. B can join using its automatically generated node access token without setting up a web login first. Once the join succeeds, A's administrator username and password hash replace B's existing login credentials and propagate to the merged cluster. B keeps its node ID and inbound token.
+To add B from A, create the administrator account on A within 30 minutes of starting it. For web-only setup, also create an administrator account on B within 30 minutes of starting it, sign in, and reveal and copy its inbound token under Cluster Management → Local Settings. If you have file access on B, you can read `cluster.token` from its configuration file instead. Once the join succeeds, A's administrator username and password hash replace B's existing login credentials and propagate to the merged cluster. B keeps its node ID and inbound token.
 
 During enrollment, A supplies the shared settings and wins conflicts between DDNS configurations with the same ID. B-only configurations are retained. B's per-node network settings fill missing or entirely empty entries in A's configuration. After enrollment, regular synchronization follows the newer configuration version. See the [full merge rules in the Chinese deployment guide](README.md#节点加入与集群合并).
 
