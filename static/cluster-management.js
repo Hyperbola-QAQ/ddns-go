@@ -70,6 +70,7 @@
     editor.hidden = false;
     byId('editorTitle').textContent = node ? '编辑 ' + (node.Name || node.ID) : '添加关联节点';
     byId('nodeIdentity').textContent = node?.ID || '保存时自动识别名称和 ID';
+    byId('joinRules').hidden = Boolean(node);
     byId('nameField').hidden = !local;
     byId('localName').value = local ? node.Name : '';
     byId('localName').placeholder = settings.DefaultNodeName;

@@ -7,12 +7,19 @@ This personal fork extends [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go)
 For cluster deployment, build the `feature-distributed-cluster` branch of this repository and run the same build on every peer. The release downloads and Docker image in the upstream reference below provide the upstream feature set.
 
 - [ddns-go distributed cluster fork](#ddns-go-distributed-cluster-fork)
+    - [Joining a cluster](#joining-a-cluster)
     - [Features](#features)
     - [Use in system](#use-in-system)
     - [Use in docker](#use-in-docker)
     - [Webhook](#webhook)
     - [Callback](#callback)
     - [Web interfaces](#web-interfaces)
+
+## Joining a cluster
+
+To add B from A, create the administrator account on A within 30 minutes of starting it. B can join using its automatically generated node access token without setting up a web login first. Once the join succeeds, A's administrator username and password hash replace B's existing login credentials and propagate to the merged cluster. B keeps its node ID and inbound token.
+
+During enrollment, A supplies the shared settings and wins conflicts between DDNS configurations with the same ID. B-only configurations are retained. B's per-node network settings fill missing or entirely empty entries in A's configuration. After enrollment, regular synchronization follows the newer configuration version. See the [full merge rules in the Chinese deployment guide](README.md#节点加入与集群合并).
 
 ## Features
 
